@@ -30,7 +30,7 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient());
 
         String html = readAsset("index.html");
-        webView.loadDataWithBaseURL("https://btc-wallet-researcher.local/", html, "text/html", "UTF-8", null);
+       webView.loadDataWithBaseURL("https://mempool.space/", html, "text/html", "UTF-8", null);
     }
 
     private String readAsset(String name) {
