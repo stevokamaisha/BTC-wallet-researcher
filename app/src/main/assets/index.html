@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>BTC Wallet Researcher</title>
+<style>
+:root{--bg:#0b1020;--panel:#121a2f;--panel2:#18213a;--text:#f5f7fb;--muted:#a9b1c4;--accent:#f59e0b;--good:#22c55e;--bad:#ef4444;--line:#2a3553}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}button,input,textarea,select{font:inherit}
+header{padding:18px 16px 10px;position:sticky;top:0;background:linear-gradient(180deg,var(--bg) 80%,transparent);z-index:2}h1{font-size:21px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px}
+nav{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:12px 0 0}nav button{border:1px solid var(--line);background:var(--panel);color:var(--text);padding:10px 5px;border-radius:12px;font-size:12px}nav button.active{border-color:var(--accent);color:#ffd68a}
+main{padding:10px 14px 90px}.screen{display:none}.screen.active{display:block}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;margin:10px 0}.card h2{font-size:16px;margin:0 0 10px}.label{font-size:12px;color:var(--muted);margin:10px 0 5px}.field,textarea,select{width:100%;background:#0d1427;color:var(--text);border:1px solid var(--line);border-radius:11px;padding:12px;outline:none}.field:focus,textarea:focus,select:focus{border-color:var(--accent)}textarea{min-height:92px;resize:vertical}.btn{border:0;border-radius:11px;padding:12px 14px;background:var(--accent);color:#141414;font-weight:700}.btn.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--line)}.btn.danger{background:#3a1620;color:#ffd4dc;border:1px solid #652637}.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1 1 140px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}.big{font-size:20px;font-weight:800}.muted{color:var(--muted)}.good{color:var(--good)}.bad{color:var(--bad)}.pill{display:inline-block;padding:5px 8px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:11px}.kv{display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}.kv:last-child{border-bottom:0}.wallet{padding:12px;border:1px solid var(--line);border-radius:12px;margin:8px 0;background:#0d1427}.tiny{font-size:11px}.notice{padding:10px 12px;border-radius:11px;background:#1e293b;border:1px solid #334155;color:#d7deea;font-size:12px;line-height:1.45}.warn{background:#33240c;border-color:#6c4a0d;color:#ffe8b1}.success{background:#0e2a1b;border-color:#1d5d39;color:#c9f7da}.error{background:#32171c;border-color:#6b2734;color:#ffd4da}.hidden{display:none!important}.check{display:flex;align-items:flex-start;gap:10px}.check input{margin-top:3px}.addrline{display:flex;gap:8px;align-items:flex-start}.addrline .mono{flex:1}.copy{flex:0 0 auto;padding:7px 9px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--text)}
+footer{position:fixed;bottom:0;left:0;right:0;background:#0b1020dd;backdrop-filter:blur(8px);padding:8px 14px calc(8px + env(safe-area-inset-bottom));font-size:10px;color:var(--muted);border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>BTC Wallet Researcher</h1>
+  <div class="sub">Public blockchain research + local ownership verification</div>
+  <nav>
+    <button data-screen="research" class="active">Research</button>
+    <button data-screen="saved">Saved</button>
+    <button data-screen="recover">Recover</button>
+    <button data-screen="claim">Claim</button>
+  </nav>
+</header>
+<main>
+<section id="research" class="screen active">
+  <div class="card">
+    <h2>Research an address</h2>
+    <div class="label">Full Bitcoin address</div>
+    <input id="researchAddress" class="field mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="1..., 3..., bc1..." />
+    <div class="row" style="margin-top:10px"><button id="analyzeBtn" class="btn">Analyze</button><button id="clearResearch" class="btn secondary">Clear</button></div>
+    <div id="researchMsg" class="notice hidden" style="margin-top:10px"></div>
+  </div>
+  <div id="researchResult" class="card hidden"></div>
+</section>
+
+<section id="saved" class="screen">
+  <div class="card">
+    <h2>Saved public addresses</h2>
+    <div class="row">
+      <select id="savedFilter"><option value="all">All</option><option value="5">Dormant 5+ years</option><option value="10">Dormant 10+ years</option><option value="15">Dormant 15+ years</option></select>
+      <input id="minBtc" class="field" type="number" min="0" step="0.00000001" value="0" placeholder="Minimum BTC" />
+    </div>
+    <div id="savedList" style="margin-top:10px"></div>
+  </div>
+</section>
+
+<section id="recover" class="screen">
+  <div class="card">
+    <h2>My / Client-authorized wallet recovery</h2>
+    <div class="notice warn">Sensitive material is processed in memory only and is never intentionally saved by this app. Do not paste a seed phrase or private key unless you own the wallet or have explicit permission from its owner.</div>
+    <div class="check" style="margin-top:12px"><input id="authRecover" type="checkbox"/><label for="authRecover">I confirm I own this wallet or I have explicit authorization from the owner to recover it.</label></div>
+    <div class="label">Recovery type</div>
+    <select id="recoveryType"><option value="mnemonic">12 / 18 / 24-word seed phrase</option><option value="wif">WIF private key</option></select>
+    <div class="label">Secret material</div>
+    <textarea id="recoverySecret" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Enter seed phrase or WIF private key"></textarea>
+    <div class="label" id="passLabel">Optional BIP39 passphrase</div>
+    <input id="bip39Pass" class="field" type="password" autocomplete="off" placeholder="Leave blank if none" />
+    <div class="row" style="margin-top:10px"><button id="deriveBtn" class="btn">Verify & derive</button><button id="wipeRecover" class="btn danger">Wipe secrets</button></div>
+    <div id="recoverMsg" class="notice hidden" style="margin-top:10px"></div>
+  </div>
+  <div id="recoverResult" class="card hidden"></div>
+</section>
+
+<section id="claim" class="screen">
+  <div class="card">
+    <h2>Claim / verify ownership</h2>
+    <div class="notice">This does not “take” an inactive wallet. It checks whether a seed phrase or WIF private key you provide actually derives the target address.</div>
+    <div class="check" style="margin-top:12px"><input id="authClaim" type="checkbox"/><label for="authClaim">I own this wallet or have explicit permission from the owner.</label></div>
+    <div class="label">Target Bitcoin address</div>
+    <input id="claimTarget" class="field mono" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Full address" />
+    <div class="label">Credential type</div>
+    <select id="claimType"><option value="mnemonic">Seed phrase</option><option value="wif">WIF private key</option></select>
+    <div class="label">Secret material</div>
+    <textarea id="claimSecret" class="mono" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+    <div class="label" id="claimPassLabel">Optional BIP39 passphrase</div>
+    <input id="claimPass" class="field" type="password" autocomplete="off" placeholder="Leave blank if none" />
+    <div class="row" style="margin-top:10px"><button id="claimBtn" class="btn">Verify ownership</button><button id="wipeClaim" class="btn danger">Wipe secrets</button></div>
+    <div id="claimMsg" class="notice hidden" style="margin-top:10px"></div>
+  </div>
+  <div id="claimResult" class="card hidden"></div>
+</section>
+</main>
+<footer>Research uses public blockchain data from mempool.space. Recovery checks are local in the page process. No cloud account is required.</footer>
+<script>
+'use strict';
+const $=id=>document.getElementById(id); const te=new TextEncoder();
+const P=0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2Fn;
+const N=0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141n;
+const GX=0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798n;
+const GY=0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8n;
+const B58='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+function mod(a,m=P){const r=a%m;return r>=0n?r:r+m}function modPow(b,e,m){let r=1n;b=mod(b,m);while(e){if(e&1n)r=r*b%m;b=b*b%m;e>>=1n}return r}function inv(a){return modPow(mod(a),P-2n,P)}
+function pointAdd(A,B){if(!A)return B;if(!B)return A;if(A.x===B.x&&mod(A.y+B.y)===0n)return null;let s;if(A.x===B.x&&A.y===B.y){if(A.y===0n)return null;s=mod((3n*A.x*A.x)*inv(2n*A.y));}else{s=mod((B.y-A.y)*inv(B.x-A.x));}const x=mod(s*s-A.x-B.x), y=mod(s*(A.x-x)-A.y);return{x,y}}
+function pointMul(k,A={x:GX,y:GY}){k=mod(k,N);if(k===0n)return null;let R=null,Q=A;while(k){if(k&1n)R=pointAdd(R,Q);Q=pointAdd(Q,Q);k>>=1n}return R}
+function hex(bytes){return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('')}function concat(...arrs){let n=arrs.reduce((s,a)=>s+a.length,0),o=new Uint8Array(n),p=0;for(const a of arrs){o.set(a,p);p+=a.length}return o}function u32(i){return new Uint8Array([(i>>>24)&255,(i>>>16)&255,(i>>>8)&255,i&255])}function bigBytes(n,len){let h=n.toString(16).padStart(len*2,'0');return Uint8Array.from(h.match(/../g).map(x=>parseInt(x,16)))}function bytesBig(b){return BigInt('0x'+hex(b))}
+async function sha256(b){return new Uint8Array(await crypto.subtle.digest('SHA-256',b))}async function hmac512(key,data){const k=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-512'},false,['sign']);return new Uint8Array(await crypto.subtle.sign('HMAC',k,data))}
+async function pbkdf2sha512(pass,salt,iters=2048,len=64){const k=await crypto.subtle.importKey('raw',pass,{name:'PBKDF2'},false,['deriveBits']);return new Uint8Array(await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-512',salt,iterations:iters},k,len*8))}
+function rol(x,n){return ((x<<n)|(x>>>(32-n)))>>>0}
+function ripemd160(msg){const r1=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,7,4,13,1,10,6,15,3,12,0,9,5,2,14,11,8,3,10,14,4,9,15,8,1,2,7,0,6,13,11,5,12,1,9,11,10,0,8,12,4,13,3,7,15,14,5,6,2,4,0,5,9,7,12,2,10,14,1,3,8,11,6,15,13];const r2=[5,14,7,0,9,2,11,4,13,6,15,8,1,10,3,12,6,11,3,7,0,13,5,10,14,15,8,12,4,9,1,2,15,5,1,3,7,14,6,9,11,8,12,2,10,0,4,13,8,6,4,1,3,11,15,0,5,12,2,13,9,7,10,14,12,15,10,4,1,5,8,7,6,2,13,14,0,3,9,11];const s1=[11,14,15,12,5,8,7,9,11,13,14,15,6,7,9,8,7,6,8,13,11,9,7,15,7,12,15,9,11,7,13,12,11,13,6,7,14,9,13,15,14,8,13,6,5,12,7,5,11,12,14,15,14,15,9,8,9,14,5,6,8,6,5,12,9,15,5,11,6,8,13,12,5,12,13,14,11,8,5,6];const s2=[8,9,9,11,13,15,15,5,7,7,8,11,14,14,12,6,9,13,15,7,12,8,9,11,7,7,12,7,6,15,13,11,9,7,15,11,8,6,6,14,12,13,5,14,13,13,7,5,15,5,8,11,14,14,6,14,6,9,12,9,12,5,15,8,8,5,12,9,12,5,14,6,8,13,6,5,15,13,11,11];
+ const ml=msg.length, bitLen=ml*8, pad=((56-(ml+1)%64)+64)%64, b=new Uint8Array(ml+1+pad+8);b.set(msg);b[ml]=0x80;let bl=BigInt(bitLen);for(let i=0;i<8;i++){b[b.length-8+i]=Number((bl>>(8n*BigInt(i)))&255n)}let h0=0x67452301,h1=0xefcdab89,h2=0x98badcfe,h3=0x10325476,h4=0xc3d2e1f0;const f=(j,x,y,z)=>j<16?(x^y^z):j<32?((x&y)|(~x&z)):j<48?((x|~y)^z):j<64?((x&z)|(y&~z)):(x^(y|~z));const k1=j=>j<16?0:j<32?0x5a827999:j<48?0x6ed9eba1:j<64?0x8f1bbcdc:0xa953fd4e;const k2=j=>j<16?0x50a28be6:j<32?0x5c4dd124:j<48?0x6d703ef3:j<64?0x7a6d76e9:0;
+ for(let off=0;off<b.length;off+=64){const X=new Uint32Array(16);for(let i=0;i<16;i++){const j=off+i*4;X[i]=(b[j]|b[j+1]<<8|b[j+2]<<16|b[j+3]<<24)>>>0}let al=h0,blv=h1,cl=h2,dl=h3,el=h4,ar=h0,br=h1,cr=h2,dr=h3,er=h4;for(let j=0;j<80;j++){let t=(rol((al+f(j,blv,cl,dl)+X[r1[j]]+k1(j))>>>0,s1[j])+el)>>>0;al=el;el=dl;dl=rol(cl,10);cl=blv;blv=t;t=(rol((ar+f(79-j,br,cr,dr)+X[r2[j]]+k2(j))>>>0,s2[j])+er)>>>0;ar=er;er=dr;dr=rol(cr,10);cr=br;br=t}const t=(h1+cl+dr)>>>0;h1=(h2+dl+er)>>>0;h2=(h3+el+ar)>>>0;h3=(h4+al+br)>>>0;h4=(h0+blv+cr)>>>0;h0=t}
+ const out=new Uint8Array(20), hs=[h0,h1,h2,h3,h4];for(let i=0;i<5;i++){out[i*4]=hs[i]&255;out[i*4+1]=(hs[i]>>>8)&255;out[i*4+2]=(hs[i]>>>16)&255;out[i*4+3]=(hs[i]>>>24)&255}return out}
+async function hash160(b){return ripemd160(await sha256(b))}
+function pubkey(priv,compressed=true){const Q=pointMul(bytesBig(priv));if(!Q)throw Error('Invalid private key');const x=bigBytes(Q.x,32),y=bigBytes(Q.y,32);return compressed?concat(new Uint8Array([Number(Q.y&1n)?3:2]),x):concat(new Uint8Array([4]),x,y)}
+function base58encode(bytes){let x=bytesBig(bytes),s='';while(x>0n){const r=Number(x%58n);x/=58n;s=B58[r]+s}for(const b of bytes){if(b===0)s='1'+s;else break}return s||'1'}function base58decode(s){let x=0n;for(const c of s){const i=B58.indexOf(c);if(i<0)throw Error('Invalid Base58 character');x=x*58n+BigInt(i)}let h=x.toString(16);if(h.length%2)h='0'+h;let body=h?Uint8Array.from(h.match(/../g).map(x=>parseInt(x,16))):new Uint8Array();let z=0;while(z<s.length&&s[z]==='1')z++;return concat(new Uint8Array(z),body)}async function b58check(payload){const d=await sha256(await sha256(payload));return base58encode(concat(payload,d.slice(0,4)))}async function b58checkDecode(s){const b=base58decode(s);if(b.length<5)throw Error('Invalid Base58Check length');const p=b.slice(0,-4),c=b.slice(-4),d=(await sha256(await sha256(p))).slice(0,4);if(hex(c)!==hex(d))throw Error('Checksum mismatch');return p}
+const BECH='qpzry9x8gf2tvdw0s3jn54khce6mua7l';function bechPolymod(vals){let chk=1;for(const v of vals){const top=chk>>>25;chk=((chk&0x1ffffff)<<5)^v;for(let i=0;i<5;i++)if((top>>>i)&1)chk^=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3][i]}return chk>>>0}function hrpExpand(h){return [...h].map(c=>c.charCodeAt(0)>>5).concat([0],[...h].map(c=>c.charCodeAt(0)&31))}function convertBits(data,from,to,pad=true){let acc=0,bits=0,ret=[],maxv=(1<<to)-1;for(const value of data){if(value<0||(value>>from)!==0)throw Error('Invalid data range');acc=(acc<<from)|value;bits+=from;while(bits>=to){bits-=to;ret.push((acc>>bits)&maxv)}}if(pad){if(bits)ret.push((acc<<(to-bits))&maxv)}else if(bits>=from||((acc<<(to-bits))&maxv))throw Error('Invalid padding');return ret}function bech32(hrp,data){const vals=hrpExpand(hrp).concat(data).concat([0,0,0,0,0,0]);const pm=bechPolymod(vals)^1;const cs=[];for(let p=0;p<6;p++)cs.push((pm>>>(5*(5-p)))&31);return hrp+'1'+data.concat(cs).map(v=>BECH[v]).join('')}
+async function addressesFromPriv(priv,compressed=true){const pk=pubkey(priv,compressed),h=await hash160(pk);const p2pkh=await b58check(concat(new Uint8Array([0]),h));const p2sh=await b58check(concat(new Uint8Array([5]),await hash160(concat(new Uint8Array([0,20]),h))));const p2w=bech32('bc',[0].concat(convertBits(h,8,5,true)));return{p2pkh,p2sh,p2w,publicKey:hex(pk)}}
+async function decodeWIF(wif){const p=await b58checkDecode(wif.trim());if(p[0]!==0x80)throw Error('Not a Bitcoin mainnet WIF');if(p.length===34&&p[33]===1)return{priv:p.slice(1,33),compressed:true};if(p.length===33)return{priv:p.slice(1),compressed:false};throw Error('Invalid WIF length')}
+async function masterFromSeed(seed){const I=await hmac512(te.encode('Bitcoin seed'),seed),k=I.slice(0,32),c=I.slice(32);const n=bytesBig(k);if(n===0n||n>=N)throw Error('Invalid master key');return{k,c}}
+async function ckd(node,index){const hard=index>=0x80000000;const data=hard?concat(new Uint8Array([0]),node.k,u32(index)):concat(pubkey(node.k,true),u32(index));const I=await hmac512(node.c,data),il=bytesBig(I.slice(0,32));if(il>=N)throw Error('Invalid child key');const child=mod(il+bytesBig(node.k),N);if(child===0n)throw Error('Invalid child key');return{k:bigBytes(child,32),c:I.slice(32)}}
+async function derivePath(seed,path){let n=await masterFromSeed(seed);for(const part of path.split('/').slice(1)){const hard=part.endsWith("'");const num=parseInt(part.replace("'",''),10);if(!Number.isFinite(num))throw Error('Bad path');n=await ckd(n,(num+(hard?0x80000000:0))>>>0)}return n}
+async function mnemonicSeed(mnemonic,pass=''){const m=mnemonic.trim().toLowerCase().replace(/\s+/g,' ').normalize('NFKD');const words=m.split(' ');if(![12,15,18,21,24].includes(words.length))throw Error('Seed phrase must contain 12, 15, 18, 21, or 24 words');return pbkdf2sha512(te.encode(m),te.encode(('mnemonic'+pass).normalize('NFKD')))}
+async function deriveMnemonicAddresses(mnemonic,pass,count=5){const seed=await mnemonicSeed(mnemonic,pass),out=[];for(let i=0;i<count;i++){for(const scheme of [{name:'BIP44 legacy',path:`m/44'/0'/0'/0/${i}`,kind:'p2pkh'},{name:'BIP49 nested SegWit',path:`m/49'/0'/0'/0/${i}`,kind:'p2sh'},{name:'BIP84 native SegWit',path:`m/84'/0'/0'/0/${i}`,kind:'p2w'}]){const n=await derivePath(seed,scheme.path),a=await addressesFromPriv(n.k,true);out.push({scheme:scheme.name,path:scheme.path,address:a[scheme.kind]})}}return out}
+function fmtBtc(sat){return (sat/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' BTC'}function yearsSince(ts){return ((Date.now()/1000-ts)/(365.2425*86400))}function setMsg(id,text,kind=''){const e=$(id);e.className='notice '+kind;e.textContent=text;e.classList.remove('hidden')}function hide(id){$(id).classList.add('hidden')}function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function copyText(t){navigator.clipboard?.writeText(t).catch(()=>{});}
+function getSaved(){try{return JSON.parse(localStorage.getItem('btcSaved')||'[]')}catch{return[]}}function putSaved(a){localStorage.setItem('btcSaved',JSON.stringify(a))}
+async function analyzeAddress(){const a=$('researchAddress').value.trim();hide('researchResult');setMsg('researchMsg','Checking public blockchain data…');try{const [st,txs]=await Promise.all([fetch('https://mempool.space/api/address/'+encodeURIComponent(a)),fetch('https://mempool.space/api/address/'+encodeURIComponent(a)+'/txs')]);if(!st.ok)throw Error('Address lookup failed ('+st.status+'). Check the address and internet connection.');const d=await st.json(),t=txs.ok?await txs.json():[];const c=d.chain_stats,m=d.mempool_stats;const bal=c.funded_txo_sum-c.spent_txo_sum,unconf=m.funded_txo_sum-m.spent_txo_sum;let last=null;for(const x of t){if(x.status&&x.status.confirmed&&x.status.block_time){last=x.status.block_time;break}}const yrs=last?yearsSince(last):null;const obj={address:a,balanceSats:bal,unconfirmedSats:unconf,receivedSats:c.funded_txo_sum,spentSats:c.spent_txo_sum,txCount:c.tx_count,lastActivity:last,dormantYears:yrs,checkedAt:Date.now()};renderResearch(obj);hide('researchMsg')}catch(e){setMsg('researchMsg',e.message,'error')}}
+function renderResearch(o){const last=o.lastActivity?new Date(o.lastActivity*1000).toLocaleString():'No confirmed transaction found in returned history';$('researchResult').innerHTML=`<h2>Address result</h2><div class="label">Full address</div><div class="addrline"><div class="mono">${escapeHtml(o.address)}</div><button class="copy" id="copyResearch">Copy</button></div><div class="kv"><span>Confirmed balance</span><strong>${fmtBtc(o.balanceSats)}</strong></div><div class="kv"><span>Unconfirmed change</span><strong>${fmtBtc(o.unconfirmedSats)}</strong></div><div class="kv"><span>Total received</span><strong>${fmtBtc(o.receivedSats)}</strong></div><div class="kv"><span>Total spent</span><strong>${fmtBtc(o.spentSats)}</strong></div><div class="kv"><span>Confirmed transactions</span><strong>${o.txCount}</strong></div><div class="kv"><span>Last activity</span><strong>${escapeHtml(last)}</strong></div><div class="kv"><span>Dormant</span><strong>${o.dormantYears==null?'Unknown':o.dormantYears.toFixed(1)+' years'}</strong></div><div class="row" style="margin-top:12px"><button class="btn" id="saveCurrent">Save public address</button><button class="btn secondary" id="openMempool">Open explorer</button></div>`;$('researchResult').classList.remove('hidden');$('copyResearch').onclick=()=>copyText(o.address);$('openMempool').onclick=()=>location.href='https://mempool.space/address/'+encodeURIComponent(o.address);$('saveCurrent').onclick=()=>{let s=getSaved();const i=s.findIndex(x=>x.address===o.address);if(i>=0)s[i]=o;else s.unshift(o);putSaved(s);renderSaved();setMsg('researchMsg','Saved locally.','success')}}
+function renderSaved(){const f=$('savedFilter').value,min=parseFloat($('minBtc').value||'0');let s=getSaved();if(f!=='all')s=s.filter(x=>(x.dormantYears||0)>=Number(f));s=s.filter(x=>x.balanceSats/1e8>=min);const box=$('savedList');if(!s.length){box.innerHTML='<div class="muted">No saved addresses match this filter.</div>';return}box.innerHTML=s.map((x,i)=>`<div class="wallet"><div class="addrline"><div class="mono tiny">${escapeHtml(x.address)}</div><button class="copy" data-copy="${escapeHtml(x.address)}">Copy</button></div><div style="margin-top:8px"><span class="pill">${fmtBtc(x.balanceSats)}</span> <span class="pill">${x.dormantYears==null?'Dormancy unknown':x.dormantYears.toFixed(1)+' yrs'}</span></div><button class="btn danger tiny" data-del="${escapeHtml(x.address)}" style="margin-top:9px;padding:7px 9px">Remove</button></div>`).join('');box.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyText(b.dataset.copy));box.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{putSaved(getSaved().filter(x=>x.address!==b.dataset.del));renderSaved()})}
+async function deriveRecovery(){hide('recoverResult');if(!$('authRecover').checked){setMsg('recoverMsg','Authorization confirmation is required.','error');return}setMsg('recoverMsg','Deriving locally…');try{const type=$('recoveryType').value,sec=$('recoverySecret').value.trim();let rows=[];if(type==='wif'){const d=await decodeWIF(sec),a=await addressesFromPriv(d.priv,d.compressed);rows=[{scheme:'Legacy P2PKH',path:'WIF',address:a.p2pkh},{scheme:'Nested SegWit',path:'WIF',address:a.p2sh},{scheme:'Native SegWit',path:'WIF',address:a.p2w}]}else{rows=await deriveMnemonicAddresses(sec,$('bip39Pass').value,5)}$('recoverResult').innerHTML='<h2>Derived public addresses</h2><div class="notice success">No secret is shown below. Compare these public addresses with your records before moving funds.</div>'+rows.map(r=>`<div class="wallet"><div><strong>${escapeHtml(r.scheme)}</strong></div><div class="tiny muted">${escapeHtml(r.path)}</div><div class="addrline" style="margin-top:5px"><div class="mono tiny">${escapeHtml(r.address)}</div><button class="copy" data-copy="${escapeHtml(r.address)}">Copy</button></div></div>`).join('');$('recoverResult').classList.remove('hidden');$('recoverResult').querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyText(b.dataset.copy));setMsg('recoverMsg','Derivation completed locally.','success')}catch(e){setMsg('recoverMsg',e.message,'error')}}
+async function verifyClaim(){hide('claimResult');if(!$('authClaim').checked){setMsg('claimMsg','Authorization confirmation is required.','error');return}const target=$('claimTarget').value.trim();if(!target){setMsg('claimMsg','Enter the target Bitcoin address.','error');return}setMsg('claimMsg','Checking whether the supplied credential derives the target…');try{let rows=[];if($('claimType').value==='wif'){const d=await decodeWIF($('claimSecret').value.trim()),a=await addressesFromPriv(d.priv,d.compressed);rows=[{scheme:'Legacy P2PKH',path:'WIF',address:a.p2pkh},{scheme:'Nested SegWit',path:'WIF',address:a.p2sh},{scheme:'Native SegWit',path:'WIF',address:a.p2w}]}else{rows=await deriveMnemonicAddresses($('claimSecret').value.trim(),$('claimPass').value,20)}const hit=rows.find(r=>r.address===target);if(hit){$('claimResult').innerHTML=`<h2 class="good">Ownership match found</h2><div class="notice success">The supplied credential derives the exact target address.</div><div class="kv"><span>Scheme</span><strong>${escapeHtml(hit.scheme)}</strong></div><div class="kv"><span>Path</span><strong class="mono">${escapeHtml(hit.path)}</strong></div><div class="label">Matched full address</div><div class="mono">${escapeHtml(hit.address)}</div>`;$('claimResult').classList.remove('hidden');setMsg('claimMsg','Verified: exact address match.','success')}else{setMsg('claimMsg','No match in the checked standard paths. For seed phrases, this build checks the first 20 receiving addresses for BIP44, BIP49 and BIP84.','error')}}catch(e){setMsg('claimMsg',e.message,'error')}}
+function wipeRecover(){$('recoverySecret').value='';$('bip39Pass').value='';$('authRecover').checked=false;hide('recoverResult');setMsg('recoverMsg','Sensitive fields wiped.','success')}function wipeClaim(){$('claimSecret').value='';$('claimPass').value='';$('authClaim').checked=false;hide('claimResult');setMsg('claimMsg','Sensitive fields wiped.','success')}
+function toggleRecoveryFields(){$('passLabel').classList.toggle('hidden',$('recoveryType').value==='wif');$('bip39Pass').classList.toggle('hidden',$('recoveryType').value==='wif');$('claimPassLabel').classList.toggle('hidden',$('claimType').value==='wif');$('claimPass').classList.toggle('hidden',$('claimType').value==='wif')}
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));$(b.dataset.screen).classList.add('active');if(b.dataset.screen==='saved')renderSaved()});$('analyzeBtn').onclick=analyzeAddress;$('clearResearch').onclick=()=>{$('researchAddress').value='';hide('researchResult');hide('researchMsg')};$('savedFilter').onchange=renderSaved;$('minBtc').oninput=renderSaved;$('deriveBtn').onclick=deriveRecovery;$('wipeRecover').onclick=wipeRecover;$('claimBtn').onclick=verifyClaim;$('wipeClaim').onclick=wipeClaim;$('recoveryType').onchange=toggleRecoveryFields;$('claimType').onchange=toggleRecoveryFields;toggleRecoveryFields();renderSaved();
+</script>
+</body>
+</html>
