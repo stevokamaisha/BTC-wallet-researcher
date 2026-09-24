@@ -1,38 +1,34 @@
-# BTC Wallet Researcher
+# Crypto Claim & Wallet Researcher v2
 
-A phone-focused Bitcoin research and ownership-verification app intended for Android-compatible HarmonyOS 3 devices such as the Huawei Mate 20 Pro.
+HarmonyOS 3 / Android-compatible research application.
 
-## Included
+## Public research features
 
-- Research a full Bitcoin address using public mempool.space data.
-- Display confirmed balance, unconfirmed change, total received/spent, transaction count, last activity, and dormancy estimate.
-- Save public addresses locally and filter by dormancy / minimum BTC.
-- Local WIF verification and address derivation.
-- Local BIP39-style seed derivation with optional passphrase.
-- Derives standard Bitcoin receiving paths for BIP44, BIP49, and BIP84.
-- Claim / ownership verification by matching a supplied credential against an exact target address.
-- No secret material is intentionally stored in localStorage.
+- Multi-source Bitcoin wallet lookup with automatic fallback between mempool.space and Blockstream Esplora.
+- Public address lookup for Ethereum, Litecoin, Dogecoin, Bitcoin Cash, Dash and Zcash through Blockchair.
+- Full addresses are displayed without shortening.
+- Saved public-wallet research and dormancy filters.
+- Mineable / unissued crypto scanner using CoinPaprika market and supply data.
+- Research prompts for official airdrops, protocol rewards, public bounties/puzzles, mining and incentive programs.
+- AI handoff via Android's share sheet. Only public research text is shared.
 
-## Important limitations
+## Recovery features
 
-- This version does **not** brute-force arbitrary private keys.
-- It does not crack `wallet.dat` or BIP38-encrypted keys on the phone.
-- Seed word count is checked, but this dependency-free build does not include the 2048-word BIP39 checksum dictionary. Exact address matching is the stronger verification step when recovering a known wallet.
-- Seed claim verification checks the first 20 receiving addresses in the standard BIP44/BIP49/BIP84 account-0 external chain.
-- Blockchain research needs internet access.
+- BIP39 seed phrase derivation (standard BIP44/BIP49/BIP84 receive paths).
+- WIF private-key verification.
+- Exact target-address verification in Claim mode.
+- Recovery and Claim require an authorization acknowledgement.
 
-## Build an APK with Android Studio
+## Security model
 
-1. Install Android Studio on a computer.
-2. Open the `BTCWalletResearcher` folder.
-3. Allow Gradle to sync and download the Android SDK/dependencies.
-4. Choose **Build > Build Bundle(s) / APK(s) > Build APK(s)**.
-5. Android Studio will produce a debug APK under `app/build/outputs/apk/debug/`.
+Seed phrases, WIF private keys and recovery passphrases are processed locally in the WebView and are not sent through the research network bridge. The Android native network bridge only permits HTTPS GET requests to an allow-list of public research providers.
 
-## Install on HarmonyOS 3
+The app does **not** treat dormant third-party wallets as abandoned or claimable and does not brute-force arbitrary private keys.
 
-Copy the APK to the phone, open it from **Files / Downloads**, and approve installation from that source if HarmonyOS asks. Exact wording varies by HarmonyOS security settings.
+## Important supply note
 
-## Security
+"Potential remaining issuance" is calculated from a market-data provider's reported maximum and circulating supply. It is a research indicator, not a promise that the difference is immediately mineable or free to claim. Some networks have no fixed maximum supply.
 
-Use recovery features only for wallets you own or where the owner has explicitly authorized recovery. Keep seed phrases and private keys offline whenever possible.
+## Build
+
+GitHub Actions builds the debug APK on every push to `main` or when manually triggered.
