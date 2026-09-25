@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: crypto-claim-research-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: APP_ACCESS_TOKEN
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.6-luna
+      - key: MAX_STARTS_PER_HOUR
+        value: "20"
