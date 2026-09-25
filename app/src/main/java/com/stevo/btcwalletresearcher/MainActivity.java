@@ -16,6 +16,7 @@ import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -47,11 +48,20 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " BTCWalletResearcher/3.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/4.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "Android");
-        webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                String v4 = readAsset("v4.js");
+                if (v4 != null && !v4.isEmpty()) {
+                    view.evaluateJavascript(v4, null);
+                }
+            }
+        });
 
         String html = readAsset("index.html");
         webView.loadDataWithBaseURL(
@@ -66,7 +76,16 @@ public class MainActivity extends Activity {
     public class NativeBridge {
         @JavascriptInterface
         public void getJson(final String urlString, final String requestId) {
-            new Thread(() -> performGet(urlString, requestId)).start();
+            new Thread(() -> performPublicGet(urlString, requestId)).start();
+        }
+
+        @JavascriptInterface
+        public void httpRequest(final String method,
+                                final String urlString,
+                                final String body,
+                                final String accessToken,
+                                final String requestId) {
+            new Thread(() -> performBackendRequest(method, urlString, body, accessToken, requestId)).start();
         }
 
         @JavascriptInterface
@@ -93,46 +112,112 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void performGet(String urlString, String requestId) {
+    private void performPublicGet(String urlString, String requestId) {
         HttpURLConnection connection = null;
         try {
             URI uri = URI.create(urlString);
             String host = uri.getHost();
             if (host == null || !ALLOWED_HOSTS.contains(host.toLowerCase())) {
-                sendNetworkResult(requestId, false, 0, "Host is not allowed by this app");
+                sendLegacyNetworkResult(requestId, false, 0, "Host is not allowed by this app");
                 return;
             }
             if (!"https".equalsIgnoreCase(uri.getScheme())) {
-                sendNetworkResult(requestId, false, 0, "Only HTTPS requests are allowed");
+                sendLegacyNetworkResult(requestId, false, 0, "Only HTTPS requests are allowed");
                 return;
             }
 
             connection = (HttpURLConnection) new URL(urlString).openConnection();
             connection.setRequestMethod("GET");
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(25000);
+            connection.setConnectTimeout(12000);
+            connection.setReadTimeout(20000);
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
-            connection.setRequestProperty("User-Agent", "BTCWalletResearcher/3.0");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/4.0");
 
             int status = connection.getResponseCode();
             InputStream input = status >= 200 && status < 400
                     ? connection.getInputStream()
                     : connection.getErrorStream();
-            String body = readText(input);
+            String responseBody = readText(input);
             boolean ok = status >= 200 && status < 300;
-            sendNetworkResult(requestId, ok, status, body);
+            sendLegacyNetworkResult(requestId, ok, status, responseBody);
         } catch (Exception e) {
-            sendNetworkResult(requestId, false, 0,
+            sendLegacyNetworkResult(requestId, false, 0,
                     e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
         } finally {
             if (connection != null) connection.disconnect();
         }
     }
 
-    private void sendNetworkResult(String requestId, boolean ok, int status, String body) {
+    private void performBackendRequest(String method,
+                                       String urlString,
+                                       String body,
+                                       String accessToken,
+                                       String requestId) {
+        HttpURLConnection connection = null;
+        try {
+            String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
+            if (!"GET".equals(normalizedMethod) && !"POST".equals(normalizedMethod)) {
+                sendV4NetworkResult(requestId, false, 0, "Only GET and POST are allowed");
+                return;
+            }
+
+            URI uri = URI.create(urlString);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
+                sendV4NetworkResult(requestId, false, 0, "Backend URL must use HTTPS");
+                return;
+            }
+
+            connection = (HttpURLConnection) new URL(urlString).openConnection();
+            connection.setRequestMethod(normalizedMethod);
+            connection.setConnectTimeout(15000);
+            connection.setReadTimeout(90000);
+            connection.setUseCaches(false);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/4.0");
+
+            if (accessToken != null && !accessToken.trim().isEmpty()) {
+                connection.setRequestProperty("X-App-Token", accessToken.trim());
+            }
+
+            if ("POST".equals(normalizedMethod)) {
+                byte[] payload = (body == null ? "{}" : body).getBytes(StandardCharsets.UTF_8);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                connection.setFixedLengthStreamingMode(payload.length);
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(payload);
+                }
+            }
+
+            int status = connection.getResponseCode();
+            InputStream input = status >= 200 && status < 400
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+            String responseBody = readText(input);
+            boolean ok = status >= 200 && status < 300;
+            sendV4NetworkResult(requestId, ok, status, responseBody);
+        } catch (Exception e) {
+            sendV4NetworkResult(requestId, false, 0,
+                    e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void sendLegacyNetworkResult(String requestId, boolean ok, int status, String body) {
         final String js = "window.NativeNet && window.NativeNet._resolve(" +
+                JSONObject.quote(requestId) + "," +
+                (ok ? "true" : "false") + "," +
+                status + "," +
+                JSONObject.quote(body == null ? "" : body) + ");";
+        runOnUiThread(() -> webView.evaluateJavascript(js, null));
+    }
+
+    private void sendV4NetworkResult(String requestId, boolean ok, int status, String body) {
+        final String js = "window.V4Net && window.V4Net._resolve(" +
                 JSONObject.quote(requestId) + "," +
                 (ok ? "true" : "false") + "," +
                 status + "," +
@@ -157,8 +242,7 @@ public class MainActivity extends Activity {
             String line;
             while ((line = reader.readLine()) != null) out.append(line).append('\n');
         } catch (Exception e) {
-            return "<html><body><h3>Unable to load application.</h3><pre>" +
-                    e.getMessage() + "</pre></body></html>";
+            return "";
         }
         return out.toString();
     }
