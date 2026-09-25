@@ -3,7 +3,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="Crypto Claim & Wallet Researcher"
+        android:label="Crypto Claim &amp; Wallet Researcher"
         android:usesCleartextTraffic="false"
         android:theme="@style/AppTheme">
 
