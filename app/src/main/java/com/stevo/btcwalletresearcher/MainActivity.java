@@ -47,7 +47,7 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " BTCWalletResearcher/2.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " BTCWalletResearcher/3.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "Android");
         webView.setWebViewClient(new WebViewClient());
@@ -114,7 +114,7 @@ public class MainActivity extends Activity {
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
-            connection.setRequestProperty("User-Agent", "BTCWalletResearcher/2.0");
+            connection.setRequestProperty("User-Agent", "BTCWalletResearcher/3.0");
 
             int status = connection.getResponseCode();
             InputStream input = status >= 200 && status < 400
