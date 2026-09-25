@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Crypto Claim & Wallet Researcher</title>
+<title>Crypto Claim & Wallet Researcher v3</title>
 <style>
 :root{--bg:#0b1020;--panel:#121a2f;--panel2:#18213a;--text:#f5f7fb;--muted:#a9b1c4;--accent:#f59e0b;--good:#22c55e;--bad:#ef4444;--line:#2a3553}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}button,input,textarea,select{font:inherit}
@@ -16,7 +16,7 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#0b1020dd;backdrop-filt
 </head>
 <body>
 <header>
-  <h1>Crypto Claim & Wallet Researcher</h1>
+  <h1>Crypto Claim & Wallet Researcher <span class="tiny muted">v3</span></h1>
   <div class="sub">Multi-source wallet intelligence, mineable supply research + local recovery</div>
   <nav>
     <button data-screen="research" class="active">Wallets</button>
@@ -30,8 +30,68 @@ footer{position:fixed;bottom:0;left:0;right:0;background:#0b1020dd;backdrop-filt
 <main>
 <section id="research" class="screen active">
   <div class="card">
-    <h2>Universal wallet research</h2>
-    <div class="notice">Public-data research only. The app uses several independent data sources and automatically falls back when one provider is unavailable.</div>
+    <h2>Wallet research</h2>
+    <div class="notice">Choose <strong>Discover</strong> to find public Bitcoin wallet addresses from historical blockchain samples without entering an address, or <strong>Lookup</strong> to research a wallet you already know. Dormant does not mean abandoned or claimable.</div>
+    <div class="row" style="margin-top:10px">
+      <button id="discoverModeBtn" class="btn">Discover wallets</button>
+      <button id="lookupModeBtn" class="btn secondary">Lookup address</button>
+    </div>
+  </div>
+
+  <div id="discoverPanel" class="card">
+    <h2>Discover public wallets</h2>
+    <div class="notice warn">Discovery is public-chain research only. Results may be inactive, but they are not “up for grabs.” Only explicitly published puzzles, bounties, airdrops or protocol rewards should be treated as claim opportunities.</div>
+
+    <div class="label">Blockchain</div>
+    <select id="discoverChain">
+      <option value="bitcoin">Bitcoin — live discovery</option>
+    </select>
+
+    <div class="row">
+      <div>
+        <div class="label">Dormant for at least</div>
+        <select id="discoverYears">
+          <option value="5">5+ years</option>
+          <option value="10" selected>10+ years</option>
+          <option value="15">15+ years</option>
+        </select>
+      </div>
+      <div>
+        <div class="label">Minimum current balance</div>
+        <input id="discoverMin" class="field" type="number" min="0" step="0.00000001" value="0.01" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="label">Maximum results</div>
+        <select id="discoverLimit">
+          <option value="3">3</option>
+          <option value="5" selected>5</option>
+          <option value="8">8</option>
+        </select>
+      </div>
+      <div>
+        <div class="label">Sample size</div>
+        <select id="discoverSample">
+          <option value="12">12 addresses</option>
+          <option value="18" selected>18 addresses</option>
+          <option value="24">24 addresses</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="discoverBtn" class="btn">Discover wallets</button>
+      <button id="discoverAnotherBtn" class="btn secondary">Scan another sample</button>
+    </div>
+    <div id="discoverMsg" class="notice hidden" style="margin-top:10px"></div>
+    <div id="discoverResults" style="margin-top:10px"></div>
+  </div>
+
+  <div id="lookupPanel" class="card hidden">
+    <h2>Lookup a known address</h2>
+    <div class="notice">Multi-source lookup with provider fallback. Enter an address only when you already know the wallet you want to research.</div>
     <div class="label">Blockchain</div>
     <select id="researchChain">
       <option value="auto">Auto detect</option>
@@ -173,6 +233,136 @@ const CHAIN_META={bitcoin:{name:'Bitcoin',symbol:'BTC',decimals:8},ethereum:{nam
 function unitAmount(raw,decimals){const n=Number(raw);if(!Number.isFinite(n))return null;return n/Math.pow(10,decimals)}
 function findLatestDate(...vals){let best=null;for(const v of vals.flat(Infinity)){if(!v)continue;const d=humanDate(v);if(d&&(!best||d>best))best=d;}return best}
 async function esploraResearch(address){let errors=[];for(const base of ['https://mempool.space/api','https://blockstream.info/api']){try{const [d,t]=await Promise.all([NativeNet.get(base+'/address/'+encodeURIComponent(address)),NativeNet.get(base+'/address/'+encodeURIComponent(address)+'/txs').catch(()=>[])]);const c=d.chain_stats||{},m=d.mempool_stats||{};let last=null;for(const x of (Array.isArray(t)?t:[])){if(x.status&&x.status.confirmed&&x.status.block_time){last=x.status.block_time;break}}const provider=base.includes('mempool')?'mempool.space':'Blockstream';return{address,chain:'bitcoin',chainName:'Bitcoin',symbol:'BTC',balance:(Number(c.funded_txo_sum||0)-Number(c.spent_txo_sum||0))/1e8,received:Number(c.funded_txo_sum||0)/1e8,spent:Number(c.spent_txo_sum||0)/1e8,unconfirmed:(Number(m.funded_txo_sum||0)-Number(m.spent_txo_sum||0))/1e8,txCount:Number(c.tx_count||0),lastActivity:last?new Date(last*1000):null,dormantYears:last?yearsSince(last):null,providers:[provider],explorerUrl:(base.includes('mempool')?'https://mempool.space/address/':'https://blockstream.info/address/')+encodeURIComponent(address)};}catch(e){errors.push(e.message)}}throw new Error('Bitcoin providers failed: '+errors.join(' | '))}
+
+let discoverSampleOffset=0;
+function setResearchMode(mode){
+  const discover=mode==='discover';
+  $('discoverPanel').classList.toggle('hidden',!discover);
+  $('lookupPanel').classList.toggle('hidden',discover);
+  $('discoverModeBtn').className=discover?'btn':'btn secondary';
+  $('lookupModeBtn').className=discover?'btn secondary':'btn';
+  hide('researchResult');
+}
+function extractBitcoinAddresses(txs,minHistoricalValueSats){
+  const seen=new Set(),out=[];
+  for(const tx of (Array.isArray(txs)?txs:[])){
+    for(const v of (Array.isArray(tx.vout)?tx.vout:[])){
+      const a=v&&v.scriptpubkey_address;
+      const value=Number(v&&v.value);
+      if(!a||seen.has(a))continue;
+      if(Number.isFinite(value)&&value<minHistoricalValueSats)continue;
+      seen.add(a);
+      out.push(a);
+    }
+  }
+  return out;
+}
+async function bitcoinAddressSummary(address){
+  let lastError='';
+  for(const base of ['https://mempool.space/api','https://blockstream.info/api']){
+    try{
+      const d=await NativeNet.get(base+'/address/'+encodeURIComponent(address));
+      const c=d.chain_stats||{},m=d.mempool_stats||{};
+      const balance=(Number(c.funded_txo_sum||0)-Number(c.spent_txo_sum||0))/1e8;
+      return {address,balance,stats:d,base};
+    }catch(e){lastError=e.message}
+  }
+  throw new Error(lastError||'Address providers failed.');
+}
+async function addBitcoinDormancy(summary){
+  const {address,balance,stats,base}=summary;
+  const t=await NativeNet.get(base+'/address/'+encodeURIComponent(address)+'/txs').catch(()=>[]);
+  let last=null;
+  for(const x of (Array.isArray(t)?t:[])){
+    if(x.status&&x.status.confirmed&&x.status.block_time){last=x.status.block_time;break}
+  }
+  const c=stats.chain_stats||{},m=stats.mempool_stats||{};
+  const provider=base.includes('mempool')?'mempool.space':'Blockstream';
+  return {
+    address,chain:'bitcoin',chainName:'Bitcoin',symbol:'BTC',balance,
+    received:Number(c.funded_txo_sum||0)/1e8,
+    spent:Number(c.spent_txo_sum||0)/1e8,
+    unconfirmed:(Number(m.funded_txo_sum||0)-Number(m.spent_txo_sum||0))/1e8,
+    txCount:Number(c.tx_count||0),
+    lastActivity:last?new Date(last*1000):null,
+    dormantYears:last?yearsSince(last):null,
+    providers:[provider],
+    explorerUrl:(base.includes('mempool')?'https://mempool.space/address/':'https://blockstream.info/address/')+encodeURIComponent(address)
+  };
+}
+function renderDiscoveredWallets(rows,meta){
+  const box=$('discoverResults');
+  if(!rows.length){
+    box.innerHTML='<div class="notice">No wallets matched this sample. That is normal: a historical block sample may contain addresses that were later spent. Tap <strong>Scan another sample</strong> to check a different historical block.</div>';
+    return;
+  }
+  box.innerHTML='<div class="tiny muted" style="margin-bottom:8px">Historical sample: '+escapeHtml(meta.date)+' · block '+escapeHtml(String(meta.height||'unknown'))+' · '+rows.length+' match(es)</div>'+
+  rows.map((o,i)=>{
+    const last=o.lastActivity?o.lastActivity.toLocaleDateString():'Unknown';
+    const dormant=o.dormantYears==null?'Unknown':o.dormantYears.toFixed(1)+' years';
+    return `<div class="wallet">
+      <div class="coinHead"><strong>#${i+1} Bitcoin public address</strong><span class="pill">${escapeHtml(fmtAsset(o.balance,'BTC'))}</span></div>
+      <div class="addrline" style="margin-top:7px"><div class="mono tiny">${escapeHtml(o.address)}</div><button class="copy" data-copy="${escapeHtml(o.address)}">Copy</button></div>
+      <div class="kv"><span>Last activity</span><strong>${escapeHtml(last)}</strong></div>
+      <div class="kv"><span>Dormant</span><strong>${escapeHtml(dormant)}</strong></div>
+      <div class="kv"><span>Transactions</span><strong>${o.txCount}</strong></div>
+      <div class="notice warn" style="margin-top:8px">Research result only — inactivity does not make this wallet claimable.</div>
+      <div class="row" style="margin-top:8px"><button class="btn secondary smallbtn" data-open="${escapeHtml(o.explorerUrl)}">Explorer</button><button class="btn secondary smallbtn" data-ai="${escapeHtml(o.address)}">AI research</button></div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>copyText(b.dataset.copy));
+  box.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openExternal(b.dataset.open));
+  box.querySelectorAll('[data-ai]').forEach(b=>b.onclick=()=>{
+    buildAiFromText(`Research this public Bitcoin address: ${b.dataset.ai}. Explain its transaction history, balance, last activity, any public labels or documented ownership, and whether it is part of an explicitly public puzzle/bounty. Do not assume inactivity means abandonment or permission to access funds.`);
+    showScreen('ai');
+  });
+}
+async function discoverWallets(reset=false){
+  if(reset)discoverSampleOffset=0;
+  const years=Math.max(1,Number($('discoverYears').value||10));
+  const min=Math.max(0,Number($('discoverMin').value||0));
+  const maxResults=Math.max(1,Number($('discoverLimit').value||5));
+  const sampleSize=Math.max(6,Number($('discoverSample').value||18));
+  $('discoverResults').innerHTML='';
+  setMsg('discoverMsg','Finding a historical Bitcoin block and sampling public outputs…');
+  try{
+    const secondsPerYear=365.2425*86400;
+    const target=Math.floor(Date.now()/1000-years*secondsPerYear-discoverSampleOffset*7*86400);
+    const blockInfo=await NativeNet.get('https://mempool.space/api/v1/mining/blocks/timestamp/'+target);
+    if(!blockInfo||!blockInfo.hash)throw new Error('Historical block lookup returned no block.');
+    const pages=[];
+    for(const start of [0,25,50]){
+      try{
+        const page=await NativeNet.get('https://mempool.space/api/block/'+encodeURIComponent(blockInfo.hash)+'/txs/'+start);
+        if(Array.isArray(page))pages.push(...page);
+      }catch(e){
+        if(start===0)throw e;
+      }
+      if(pages.length>=50)break;
+    }
+    const minHistorical=Math.max(0,Math.floor(min*1e8));
+    const candidates=extractBitcoinAddresses(pages,minHistorical).slice(0,sampleSize);
+    if(!candidates.length)throw new Error('No standard public addresses were found in this block sample.');
+    const found=[];
+    for(let i=0;i<candidates.length;i++){
+      setMsg('discoverMsg',`Checking public wallet ${i+1} of ${candidates.length}… ${found.length} match(es) so far.`);
+      try{
+        const summary=await bitcoinAddressSummary(candidates[i]);
+        if(summary.balance<min)continue;
+        const full=await addBitcoinDormancy(summary);
+        if(full.dormantYears!=null&&full.dormantYears>=years){
+          found.push(full);
+          if(found.length>=maxResults)break;
+        }
+      }catch(e){}
+    }
+    const date=blockInfo.timestamp?new Date(blockInfo.timestamp).toLocaleDateString():new Date(target*1000).toLocaleDateString();
+    renderDiscoveredWallets(found,{date,height:blockInfo.height});
+    setMsg('discoverMsg',found.length?`Finished. Found ${found.length} wallet(s) matching this sample.`:'Finished. No matches in this sample. Try another sample.',found.length?'success':'');
+  }catch(e){
+    setMsg('discoverMsg','Discovery could not complete: '+e.message,'error');
+  }
+}
 async function blockchairResearch(address,chain){const meta=CHAIN_META[chain],url='https://api.blockchair.com/'+chain+'/dashboards/address/'+encodeURIComponent(address)+'?limit=0';const j=await NativeNet.get(url);const data=j&&j.data?j.data:null;if(!data)throw new Error('No address data returned.');const entry=data[address]||data[address.toLowerCase()]||Object.values(data)[0];if(!entry)throw new Error('Address was not found by provider.');const info=entry.address||entry;const bal=unitAmount(info.balance,meta.decimals),received=unitAmount(info.received,meta.decimals),spent=unitAmount(info.spent,meta.decimals);const last=findLatestDate(info.last_seen_spending,info.last_seen_receiving,info.last_seen,info.last_time);const txCount=Number(info.transaction_count??info.call_count??0);let tokenCount=null;if(chain==='ethereum'){const tokens=(entry.layer_2&&entry.layer_2.erc_20)||entry.erc_20;if(Array.isArray(tokens))tokenCount=tokens.length}return{address,chain,chainName:meta.name,symbol:meta.symbol,balance:bal,received,spent,unconfirmed:null,txCount,lastActivity:last,dormantYears:last?(Date.now()-last.getTime())/(365.2425*86400000):null,providers:['Blockchair'],tokenCount,explorerUrl:'https://blockchair.com/'+chain+'/address/'+encodeURIComponent(address)};}
 
 function getSaved(){try{return JSON.parse(localStorage.getItem('walletResearchSavedV2')||localStorage.getItem('btcSaved')||'[]')}catch{return[]}}function putSaved(a){localStorage.setItem('walletResearchSavedV2',JSON.stringify(a))}
@@ -190,7 +380,7 @@ async function deriveRecovery(){hide('recoverResult');if(!$('authRecover').check
 async function verifyClaim(){hide('claimResult');if(!$('authClaim').checked){setMsg('claimMsg','Authorization confirmation is required.','error');return}const target=$('claimTarget').value.trim();if(!target){setMsg('claimMsg','Enter the target Bitcoin address.','error');return}setMsg('claimMsg','Checking whether the supplied credential derives the target…');try{let rows=[];if($('claimType').value==='wif'){const d=await decodeWIF($('claimSecret').value.trim()),a=await addressesFromPriv(d.priv,d.compressed);rows=[{scheme:'Legacy P2PKH',path:'WIF',address:a.p2pkh},{scheme:'Nested SegWit',path:'WIF',address:a.p2sh},{scheme:'Native SegWit',path:'WIF',address:a.p2w}]}else{rows=await deriveMnemonicAddresses($('claimSecret').value.trim(),$('claimPass').value,20)}const hit=rows.find(r=>r.address===target);if(hit){$('claimResult').innerHTML=`<h2 class="good">Ownership match found</h2><div class="notice success">The supplied credential derives the exact target address.</div><div class="kv"><span>Scheme</span><strong>${escapeHtml(hit.scheme)}</strong></div><div class="kv"><span>Path</span><strong class="mono">${escapeHtml(hit.path)}</strong></div><div class="label">Matched full address</div><div class="mono">${escapeHtml(hit.address)}</div>`;$('claimResult').classList.remove('hidden');setMsg('claimMsg','Verified: exact address match.','success')}else{setMsg('claimMsg','No match in the checked standard paths. For seed phrases, this build checks the first 20 receiving addresses for BIP44, BIP49 and BIP84.','error')}}catch(e){setMsg('claimMsg',e.message,'error')}}
 function wipeRecover(){$('recoverySecret').value='';$('bip39Pass').value='';$('authRecover').checked=false;hide('recoverResult');setMsg('recoverMsg','Sensitive fields wiped.','success')}function wipeClaim(){$('claimSecret').value='';$('claimPass').value='';$('authClaim').checked=false;hide('claimResult');setMsg('claimMsg','Sensitive fields wiped.','success')}
 function toggleRecoveryFields(){$('passLabel').classList.toggle('hidden',$('recoveryType').value==='wif');$('bip39Pass').classList.toggle('hidden',$('recoveryType').value==='wif');$('claimPassLabel').classList.toggle('hidden',$('claimType').value==='wif');$('claimPass').classList.toggle('hidden',$('claimType').value==='wif')}
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showScreen(b.dataset.screen));$('analyzeBtn').onclick=analyzeAddress;$('clearResearch').onclick=()=>{$('researchAddress').value='';hide('researchResult');hide('researchMsg')};$('savedFilter').onchange=renderSaved;$('savedChain').onchange=renderSaved;$('loadMineableBtn').onclick=loadMineable;$('refreshMineableBtn').onclick=loadMineable;$('opportunityAiBtn').onclick=()=>{const p=buildOpportunityPrompt();if(!p){$('opportunityQuery').focus();return}buildAiFromText(p);showScreen('ai')};$('opportunityWebBtn').onclick=()=>{const p=buildOpportunityPrompt();if(p)webSearch(p)};$('aiFromLatest').onclick=()=>{if(latestPublicResearch)buildAiFromText(latestPublicResearch)};$('shareAiBtn').onclick=()=>{const p=$('aiPrompt').value.trim();if(p)sharePublic(p)};$('openChatGptBtn').onclick=()=>openExternal('https://chatgpt.com/');$('aiWebBtn').onclick=()=>{const p=$('aiPrompt').value.trim();if(p)webSearch(p)};$('deriveBtn').onclick=deriveRecovery;$('wipeRecover').onclick=wipeRecover;$('claimBtn').onclick=verifyClaim;$('wipeClaim').onclick=wipeClaim;$('recoveryType').onchange=toggleRecoveryFields;$('claimType').onchange=toggleRecoveryFields;toggleRecoveryFields();renderSaved();
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>showScreen(b.dataset.screen));$('discoverModeBtn').onclick=()=>setResearchMode('discover');$('lookupModeBtn').onclick=()=>setResearchMode('lookup');$('discoverBtn').onclick=()=>discoverWallets(true);$('discoverAnotherBtn').onclick=()=>{discoverSampleOffset++;discoverWallets(false)};$('analyzeBtn').onclick=analyzeAddress;$('clearResearch').onclick=()=>{$('researchAddress').value='';hide('researchResult');hide('researchMsg')};$('savedFilter').onchange=renderSaved;$('savedChain').onchange=renderSaved;$('loadMineableBtn').onclick=loadMineable;$('refreshMineableBtn').onclick=loadMineable;$('opportunityAiBtn').onclick=()=>{const p=buildOpportunityPrompt();if(!p){$('opportunityQuery').focus();return}buildAiFromText(p);showScreen('ai')};$('opportunityWebBtn').onclick=()=>{const p=buildOpportunityPrompt();if(p)webSearch(p)};$('aiFromLatest').onclick=()=>{if(latestPublicResearch)buildAiFromText(latestPublicResearch)};$('shareAiBtn').onclick=()=>{const p=$('aiPrompt').value.trim();if(p)sharePublic(p)};$('openChatGptBtn').onclick=()=>openExternal('https://chatgpt.com/');$('aiWebBtn').onclick=()=>{const p=$('aiPrompt').value.trim();if(p)webSearch(p)};$('deriveBtn').onclick=deriveRecovery;$('wipeRecover').onclick=wipeRecover;$('claimBtn').onclick=verifyClaim;$('wipeClaim').onclick=wipeClaim;$('recoveryType').onchange=toggleRecoveryFields;$('claimType').onchange=toggleRecoveryFields;toggleRecoveryFields();renderSaved();setResearchMode('discover');
 </script>
 </body>
 </html>
