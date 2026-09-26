@@ -48,7 +48,7 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/5.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/6.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "Android");
         webView.setWebChromeClient(new WebChromeClient());
@@ -148,7 +148,7 @@ public class MainActivity extends Activity {
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
             connection.setRequestProperty("Accept-Encoding", "identity");
             connection.setRequestProperty("Connection", "close");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/5.0");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/6.0");
 
             int status = connection.getResponseCode();
             InputStream input = status >= 200 && status < 400
@@ -197,7 +197,7 @@ public class MainActivity extends Activity {
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/5.0");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/6.0");
 
             if (accessToken != null && !accessToken.trim().isEmpty()) {
                 connection.setRequestProperty("X-App-Token", accessToken.trim());
