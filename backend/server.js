@@ -1,4 +1,5 @@
 import express from 'express';
+import { load } from 'cheerio';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -180,7 +181,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'crypto-claim-research-backend',
-    version: '4.0',
+    version: '7.0',
     model: OPENAI_MODEL,
     openaiConfigured: Boolean(OPENAI_API_KEY),
     accessTokenConfigured: Boolean(APP_ACCESS_TOKEN)
@@ -255,6 +256,348 @@ app.post('/api/search/:id/cancel', requireAppToken, async (req, res) => {
     res.json({ id: response.id, status: response.status || 'cancelled' });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message || 'Unable to cancel search.' });
+  }
+});
+
+
+const WALLET_PAGE_CACHE_MS = 10 * 60 * 1000;
+const walletPageCache = new Map();
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Accept': options.accept || 'text/html,application/json,text/plain,*/*',
+        'User-Agent': 'CryptoClaimWalletResearcher/7.0 (+public blockchain research)',
+        ...(options.headers || {})
+      }
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      const err = new Error('HTTP ' + response.status + ' from ' + new URL(url).hostname);
+      err.status = response.status;
+      err.body = text.slice(0, 300);
+      throw err;
+    }
+    return { response, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseUtcDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/\s+UTC$/i, ' UTC');
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function yearsAgo(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  return (Date.now() - date.getTime()) / (365.2425 * 86400000);
+}
+
+function newerDate(a, b) {
+  if (!a) return b || null;
+  if (!b) return a || null;
+  return a > b ? a : b;
+}
+
+function bitInfoUrl(page) {
+  return page <= 1
+    ? 'https://bitinfocharts.com/top-100-richest-bitcoin-addresses.html'
+    : 'https://bitinfocharts.com/top-100-richest-bitcoin-addresses-' + page + '.html';
+}
+
+function parseBitInfoRows(html, page) {
+  const $ = load(html);
+  const rows = [];
+
+  $('tr').each((_, tr) => {
+    const cells = $(tr).find('td');
+    if (cells.length < 6) return;
+
+    const rank = Number.parseInt($(cells[0]).text().trim(), 10);
+    if (!Number.isFinite(rank)) return;
+
+    const addressLink = $(cells[1]).find('a[href*="/bitcoin/address/"]').first();
+    const address = addressLink.text().trim();
+    if (!address || !/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{20,}$/i.test(address)) return;
+
+    const balanceText = $(cells[2]).text().replace(/,/g, '');
+    const balanceMatch = balanceText.match(/([0-9]+(?:\.[0-9]+)?)\s*BTC/i);
+    const balance = balanceMatch ? Number(balanceMatch[1]) : NaN;
+    if (!Number.isFinite(balance)) return;
+
+    const firstIn = parseUtcDate($(cells[4]).text());
+    const lastIn = parseUtcDate($(cells[5]).text());
+    const firstOut = cells.length > 7 ? parseUtcDate($(cells[7]).text()) : null;
+    const lastOut = cells.length > 8 ? parseUtcDate($(cells[8]).text()) : null;
+    const lastActivity = newerDate(lastIn, lastOut);
+
+    rows.push({
+      address,
+      balance,
+      rank,
+      firstIn: firstIn ? firstIn.toISOString() : null,
+      firstOut: firstOut ? firstOut.toISOString() : null,
+      lastActivity: lastActivity ? lastActivity.toISOString() : null,
+      dormantYears: lastActivity ? yearsAgo(lastActivity) : null,
+      txCount: null,
+      source: 'BitInfoCharts',
+      sourcePage: page,
+      verified: false
+    });
+  });
+
+  return rows;
+}
+
+async function getBitInfoPage(page) {
+  const key = 'bitinfo:' + page;
+  const cached = walletPageCache.get(key);
+  if (cached && Date.now() - cached.time < WALLET_PAGE_CACHE_MS) return cached.rows;
+
+  const { text } = await fetchWithTimeout(bitInfoUrl(page), {}, 16000);
+  const rows = parseBitInfoRows(text, page);
+  if (rows.length < 20) throw new Error('BitInfoCharts page ' + page + ' returned too few address rows.');
+
+  walletPageCache.set(key, { time: Date.now(), rows });
+  return rows;
+}
+
+async function verifyEsploraAddress(row) {
+  const address = encodeURIComponent(row.address);
+  const providers = [
+    { name: 'Blockstream', base: 'https://blockstream.info/api', explorer: 'https://blockstream.info/address/' },
+    { name: 'mempool.space', base: 'https://mempool.space/api', explorer: 'https://mempool.space/address/' }
+  ];
+
+  for (const provider of providers) {
+    try {
+      const [infoResult, txResult] = await Promise.all([
+        fetchWithTimeout(provider.base + '/address/' + address, { accept: 'application/json' }, 12000),
+        fetchWithTimeout(provider.base + '/address/' + address + '/txs', { accept: 'application/json' }, 12000)
+      ]);
+
+      const info = JSON.parse(infoResult.text);
+      const txs = JSON.parse(txResult.text);
+      const chain = info.chain_stats || {};
+      const mempool = info.mempool_stats || {};
+      const balance = (
+        Number(chain.funded_txo_sum || 0) -
+        Number(chain.spent_txo_sum || 0) +
+        Number(mempool.funded_txo_sum || 0) -
+        Number(mempool.spent_txo_sum || 0)
+      ) / 1e8;
+
+      let lastActivity = null;
+      if (Array.isArray(txs)) {
+        for (const tx of txs) {
+          const timestamp = tx && tx.status && tx.status.confirmed
+            ? Number(tx.status.block_time || 0)
+            : 0;
+          if (timestamp) {
+            lastActivity = new Date(timestamp * 1000);
+            break;
+          }
+        }
+      }
+
+      return {
+        ...row,
+        balance,
+        txCount: Number(chain.tx_count || 0) + Number(mempool.tx_count || 0),
+        lastActivity: lastActivity ? lastActivity.toISOString() : row.lastActivity,
+        dormantYears: lastActivity ? yearsAgo(lastActivity) : row.dormantYears,
+        verified: true,
+        verificationSource: provider.name,
+        explorerUrl: provider.explorer + address
+      };
+    } catch (e) {
+      // Try the next independent provider.
+    }
+  }
+
+  return {
+    ...row,
+    verified: false,
+    verificationSource: null,
+    explorerUrl: 'https://bitinfocharts.com/bitcoin/address/' + address
+  };
+}
+
+async function mapLimit(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function run() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        results[i] = await worker(items[i], i);
+      } catch (e) {
+        results[i] = { ...items[i], verified: false, verificationError: e.message };
+      }
+    }
+  }
+
+  const workers = [];
+  for (let i = 0; i < Math.min(limit, items.length); i++) workers.push(run());
+  await Promise.all(workers);
+  return results;
+}
+
+async function blockchairFallback(minBalance, years, limit, offset) {
+  const minSats = Math.max(1, Math.floor(minBalance * 1e8));
+  const url = 'https://api.blockchair.com/bitcoin/addresses?q=balance(' + minSats + '..)&limit=100&offset=' + offset;
+  const { text } = await fetchWithTimeout(url, { accept: 'application/json' }, 16000);
+  const payload = JSON.parse(text);
+  const raw = Array.isArray(payload.data) ? payload.data : [];
+  const addresses = [];
+
+  for (const item of raw) {
+    const address = Array.isArray(item) ? item[0] : item && item.address;
+    const balanceSats = Number(Array.isArray(item) ? item[1] : item && item.balance);
+    if (typeof address === 'string' && Number.isFinite(balanceSats)) {
+      addresses.push({ address, balance: balanceSats / 1e8 });
+    }
+  }
+
+  const candidateAddresses = addresses.slice(0, 30);
+  const verified = await mapLimit(candidateAddresses, 4, async (row) => {
+    const out = await verifyEsploraAddress({
+      ...row,
+      rank: null,
+      lastActivity: null,
+      dormantYears: null,
+      txCount: null,
+      source: 'Blockchair index',
+      verified: false
+    });
+    return out;
+  });
+
+  return verified
+    .filter((x) => x.balance >= minBalance && x.dormantYears != null && x.dormantYears >= years)
+    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance)
+    .slice(0, limit);
+}
+
+async function discoverWalletsResilient({ years, minBalance, limit, depth, cursor }) {
+  const pageCount = depth >= 500 ? 5 : depth >= 300 ? 3 : 2;
+  const startPage = (cursor % 5) + 1;
+  const pages = [];
+  for (let i = 0; i < pageCount; i++) pages.push(((startPage - 1 + i) % 5) + 1);
+
+  const pageResults = await Promise.allSettled(pages.map((page) => getBitInfoPage(page)));
+  const rows = [];
+  const sourceErrors = [];
+
+  pageResults.forEach((result, i) => {
+    if (result.status === 'fulfilled') rows.push(...result.value);
+    else sourceErrors.push('BitInfoCharts page ' + pages[i] + ': ' + result.reason.message);
+  });
+
+  const unique = new Map();
+  for (const row of rows) unique.set(row.address, row);
+  const candidates = [...unique.values()];
+
+  let matches = candidates
+    .filter((x) => x.balance >= minBalance && x.dormantYears != null && x.dormantYears >= years)
+    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance);
+
+  const verifyPool = matches.slice(0, Math.max(limit * 3, 12));
+  if (verifyPool.length) {
+    const verified = await mapLimit(verifyPool, 4, verifyEsploraAddress);
+    matches = verified
+      .filter((x) => x.balance >= minBalance && x.dormantYears != null && x.dormantYears >= years)
+      .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance);
+  }
+
+  if (!matches.length && candidates.length === 0) {
+    try {
+      matches = await blockchairFallback(minBalance, years, limit, cursor * 100);
+    } catch (e) {
+      sourceErrors.push('Blockchair fallback: ' + e.message);
+    }
+  }
+
+  return {
+    ok: true,
+    partial: sourceErrors.length > 0,
+    source: candidates.length ? 'BitInfoCharts rich list + Esplora verification' : 'Blockchair fallback + Esplora verification',
+    checked: candidates.length,
+    pages,
+    cursor,
+    nextCursor: (cursor + pageCount) % 5,
+    results: matches.slice(0, limit),
+    sourceErrors
+  };
+}
+
+app.get('/api/wallets/health', async (req, res) => {
+  const checks = {
+    backend: { ok: true, detail: 'Render backend online' },
+    bitinfocharts: { ok: false, detail: '' },
+    blockstream: { ok: false, detail: '' }
+  };
+
+  const [bitinfo, blockstream] = await Promise.allSettled([
+    getBitInfoPage(1),
+    fetchWithTimeout('https://blockstream.info/api/blocks/tip/height', { accept: 'text/plain' }, 10000)
+  ]);
+
+  if (bitinfo.status === 'fulfilled') {
+    checks.bitinfocharts = { ok: true, detail: bitinfo.value.length + ' ranked addresses cached' };
+  } else {
+    checks.bitinfocharts = { ok: false, detail: bitinfo.reason.message };
+  }
+
+  if (blockstream.status === 'fulfilled') {
+    checks.blockstream = { ok: true, detail: 'height ' + blockstream.value.text.trim() };
+  } else {
+    checks.blockstream = { ok: false, detail: blockstream.reason.message };
+  }
+
+  res.json({
+    ok: true,
+    version: '7.0',
+    checks,
+    usable: checks.bitinfocharts.ok || checks.blockstream.ok
+  });
+});
+
+app.get('/api/wallets/discover', async (req, res) => {
+  const years = Math.min(20, Math.max(1, Number(req.query.years || 10)));
+  const minBalance = Math.min(1000000, Math.max(0, Number(req.query.min || 0.01)));
+  const limit = Math.min(10, Math.max(1, Math.floor(Number(req.query.limit || 5))));
+  const depth = [200, 300, 500].includes(Number(req.query.depth)) ? Number(req.query.depth) : 200;
+  const cursor = Math.max(0, Math.floor(Number(req.query.cursor || 0)));
+
+  try {
+    const data = await discoverWalletsResilient({ years, minBalance, limit, depth, cursor });
+    res.json(data);
+  } catch (e) {
+    console.error('wallet discovery error:', e.message);
+    res.json({
+      ok: true,
+      partial: true,
+      source: 'No candidate source completed',
+      checked: 0,
+      pages: [],
+      cursor,
+      nextCursor: cursor,
+      results: [],
+      sourceErrors: [e.message],
+      message: 'The research service stayed online, but its upstream public data sources were temporarily unavailable.'
+    });
   }
 });
 
