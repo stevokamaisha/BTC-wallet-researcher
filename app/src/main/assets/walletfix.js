@@ -1,16 +1,16 @@
 (function () {
   'use strict';
-  if (window.__walletDiscoveryV5Loaded) return;
-  window.__walletDiscoveryV5Loaded = true;
+  if (window.__walletDiscoveryV6Loaded) return;
+  window.__walletDiscoveryV6Loaded = true;
 
-  const $v5 = (id) => document.getElementById(id);
-  const PROVIDERS = [
-    { name: 'Blockstream', base: 'https://blockstream.info/api' },
-    { name: 'mempool.space', base: 'https://mempool.space/api' }
-  ];
+  const $v6 = (id) => document.getElementById(id);
+  const BLOCKCHAIR = 'https://api.blockchair.com/bitcoin';
+  const BLOCKSTREAM = 'https://blockstream.info/api';
+  const MEMPOOL = 'https://mempool.space/api';
+  const OFFSET_LADDER = [0, 500, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000];
 
   const title = document.querySelector('header h1');
-  if (title) title.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v5</span>';
+  if (title) title.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v6</span>';
 
   if (window.NativeNet && window.NativeNet.pending) {
     window.NativeNet._resolve = function (id, ok, status, body) {
@@ -43,10 +43,10 @@
         reject(new Error('Native network bridge unavailable. Install the newest APK.'));
         return;
       }
-      const id = 'v5_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
+
+      const id = 'v6_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2);
       const timer = setTimeout(() => {
-        const p = window.NativeNet.pending.get(id);
-        if (p) {
+        if (window.NativeNet.pending.has(id)) {
           window.NativeNet.pending.delete(id);
           reject(new Error('Timed out'));
         }
@@ -57,15 +57,15 @@
     });
   }
 
-  function firstSuccess(requests) {
+  function firstSuccess(tasks) {
     return new Promise((resolve, reject) => {
-      let remaining = requests.length;
-      const errors = [];
+      let remaining = tasks.length;
       let settled = false;
+      const errors = [];
 
-      requests.forEach((fn, i) => {
+      tasks.forEach((task, i) => {
         Promise.resolve()
-          .then(fn)
+          .then(task)
           .then((value) => {
             if (settled) return;
             settled = true;
@@ -82,219 +82,152 @@
     });
   }
 
-  function providerGet(path, timeoutMs) {
-    return firstSuccess(PROVIDERS.map((p) => async () => {
-      const data = await nativeGet(p.base + path, timeoutMs || 12000);
-      return { data, provider: p };
-    }));
-  }
-
-  function providerGetPreferred(provider, path, timeoutMs) {
-    const order = [provider].concat(PROVIDERS.filter((p) => p.base !== provider.base));
-    return firstSuccess(order.map((p) => async () => {
-      const data = await nativeGet(p.base + path, timeoutMs || 12000);
-      return { data, provider: p };
-    }));
-  }
-
-  function v5Notice(text, kind) {
+  function notice(text, kind) {
     if (typeof setMsg === 'function') {
       setMsg('discoverMsg', text, kind || '');
       return;
     }
-    const el = $v5('discoverMsg');
+    const el = $v6('discoverMsg');
     if (!el) return;
     el.className = 'notice ' + (kind || '');
     el.textContent = text;
     el.classList.remove('hidden');
   }
 
-  function updateProviderLine(text, kind) {
-    const el = $v5('v5ProviderStatus');
+  function statusLine(text, kind) {
+    const el = $v6('v6ProviderStatus');
     if (!el) return;
     el.className = 'notice ' + (kind || '');
     el.textContent = text;
     el.classList.remove('hidden');
   }
 
-  const discoverPanel = $v5('discoverPanel');
-  if (discoverPanel && !$v5('v5NetworkTest')) {
-    const controls = document.createElement('div');
-    controls.className = 'row';
-    controls.style.marginTop = '8px';
-    controls.innerHTML =
-      '<button id="v5NetworkTest" class="btn secondary">Test data providers</button>' +
-      '<button id="v5ResetNetwork" class="btn secondary">Reset scan</button>';
-    discoverPanel.appendChild(controls);
-
-    const status = document.createElement('div');
-    status.id = 'v5ProviderStatus';
-    status.className = 'notice hidden';
-    status.style.marginTop = '8px';
-    discoverPanel.appendChild(status);
+  function parseDate(value) {
+    if (!value) return null;
+    const d = new Date(String(value).replace(' ', 'T') + (String(value).includes('Z') ? '' : 'Z'));
+    if (!Number.isNaN(d.getTime())) return d;
+    const d2 = new Date(value);
+    return Number.isNaN(d2.getTime()) ? null : d2;
   }
 
-  async function testOneProvider(p) {
-    const started = Date.now();
-    try {
-      const value = await nativeGet(p.base + '/blocks/tip/height', 9000);
-      const height = Number(value);
-      if (!Number.isFinite(height) || height < 1) throw new Error('Invalid block height');
-      return { ok: true, name: p.name, ms: Date.now() - started, height };
-    } catch (e) {
-      return { ok: false, name: p.name, ms: Date.now() - started, error: e.message || String(e) };
-    }
+  function maxDate(a, b) {
+    if (!a) return b || null;
+    if (!b) return a || null;
+    return a > b ? a : b;
   }
 
-  async function networkTest() {
-    updateProviderLine('Testing Blockstream and mempool.space…');
-    const results = await Promise.all(PROVIDERS.map(testOneProvider));
-    const text = results.map((r) =>
-      r.ok
-        ? r.name + ': OK (' + r.ms + ' ms, height ' + r.height + ')'
-        : r.name + ': FAILED (' + r.error + ')'
-    ).join(' · ');
-    const good = results.filter((r) => r.ok).length;
-    updateProviderLine(text, good ? 'success' : 'error');
-    return results;
+  function btcFromSats(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n / 1e8 : null;
   }
 
-  async function getTipHeight() {
-    const r = await providerGet('/blocks/tip/height', 10000);
-    const height = Number(r.data);
-    if (!Number.isFinite(height) || height < 1) throw new Error(r.provider.name + ' returned an invalid tip height.');
-    return { height: Math.floor(height), provider: r.provider };
-  }
-
-  async function getHistoricalBlock(years, sampleOffset) {
-    const tip = await getTipHeight();
-    const blocksPerYear = 365.2425 * 144;
-    const weeksBack = Math.max(0, Number(sampleOffset) || 0);
-    const targetHeight = Math.max(1, Math.floor(tip.height - years * blocksPerYear - weeksBack * 7 * 144));
-
-    const hashResult = await providerGetPreferred(
-      tip.provider,
-      '/block-height/' + targetHeight,
-      10000
-    );
-    const hash = String(hashResult.data || '').trim();
-    if (!/^[0-9a-f]{64}$/i.test(hash)) {
-      throw new Error(hashResult.provider.name + ' returned an invalid block hash.');
-    }
-
-    const blockResult = await providerGetPreferred(
-      hashResult.provider,
-      '/block/' + encodeURIComponent(hash),
-      10000
-    );
-    const block = blockResult.data;
-    if (!block || typeof block !== 'object') {
-      throw new Error(blockResult.provider.name + ' returned invalid block details.');
-    }
-
-    return {
-      hash,
-      height: Number(block.height || targetHeight),
-      timestamp: Number(block.timestamp || 0),
-      provider: blockResult.provider
-    };
-  }
-
-  async function getBlockTransactions(block) {
-    const result = await providerGetPreferred(
-      block.provider,
-      '/block/' + encodeURIComponent(block.hash) + '/txs/0',
-      12000
-    );
-    const txs = Array.isArray(result.data) ? result.data : [];
-    if (!txs.length) throw new Error(result.provider.name + ' returned no transactions for the sampled block.');
-    return txs;
-  }
-
-  function collectCandidates(txs, wanted) {
-    const seen = new Set();
+  function indexRows(payload) {
+    const data = payload && Array.isArray(payload.data) ? payload.data : [];
     const out = [];
 
-    for (const tx of txs) {
-      const outputs = tx && Array.isArray(tx.vout) ? tx.vout : [];
-      for (const v of outputs) {
-        const a = v && v.scriptpubkey_address;
-        if (!a || seen.has(a)) continue;
-        if (!/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{20,}$/i.test(a)) continue;
-        seen.add(a);
-        out.push(a);
-        if (out.length >= wanted) return out;
+    for (const row of data) {
+      let address = null;
+      let balance = null;
+
+      if (Array.isArray(row)) {
+        address = row[0];
+        balance = row[1];
+      } else if (row && typeof row === 'object') {
+        address = row.address || row[0] || row.addr;
+        balance = row.balance != null ? row.balance : row[1];
       }
+
+      if (typeof address !== 'string' || !address) continue;
+      const bal = Number(balance);
+      if (!Number.isFinite(bal)) continue;
+      out.push({ address, balanceSats: bal });
     }
+
     return out;
   }
 
-  async function currentAddressStats(address) {
-    const result = await providerGet(
-      '/address/' + encodeURIComponent(address),
-      10000
-    );
-    const d = result.data || {};
-    const c = d.chain_stats || {};
-    const m = d.mempool_stats || {};
-    const funded = Number(c.funded_txo_sum || 0);
-    const spent = Number(c.spent_txo_sum || 0);
-    const memFunded = Number(m.funded_txo_sum || 0);
-    const memSpent = Number(m.spent_txo_sum || 0);
+  function parseDashboardEntry(address, entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    const info = entry.address || entry;
+    const balanceSats = Number(info.balance);
+    if (!Number.isFinite(balanceSats) || balanceSats <= 0) return null;
+
+    const lastReceive = parseDate(info.last_seen_receiving);
+    const lastSpend = parseDate(info.last_seen_spending);
+    const last = maxDate(lastReceive, lastSpend);
 
     return {
       address,
-      balance: (funded - spent + memFunded - memSpent) / 1e8,
-      confirmedBalance: (funded - spent) / 1e8,
-      received: funded / 1e8,
-      spent: spent / 1e8,
-      unconfirmed: (memFunded - memSpent) / 1e8,
-      txCount: Number(c.tx_count || 0) + Number(m.tx_count || 0),
-      provider: result.provider
+      chain: 'bitcoin',
+      chainName: 'Bitcoin',
+      symbol: 'BTC',
+      balance: balanceSats / 1e8,
+      received: btcFromSats(info.received),
+      spent: btcFromSats(info.spent),
+      unconfirmed: null,
+      txCount: Number(info.transaction_count || 0),
+      lastActivity: last,
+      dormantYears: last ? (Date.now() - last.getTime()) / (365.2425 * 86400000) : null,
+      providers: ['Blockchair index'],
+      explorerUrl: 'https://blockchair.com/bitcoin/address/' + encodeURIComponent(address)
     };
   }
 
-  async function addLatestActivity(summary) {
-    const result = await providerGetPreferred(
-      summary.provider,
-      '/address/' + encodeURIComponent(summary.address) + '/txs',
-      10000
-    );
+  function chunks(array, size) {
+    const out = [];
+    for (let i = 0; i < array.length; i += size) out.push(array.slice(i, i + size));
+    return out;
+  }
+
+  async function fetchIndexedCandidates(minBtc, limit, offset) {
+    const minSats = Math.max(1, Math.floor(minBtc * 1e8));
+    const url = BLOCKCHAIR + '/addresses?q=balance(' + minSats + '..)&limit=' + limit + '&offset=' + offset;
+    const payload = await nativeGet(url, 15000);
+    const rows = indexRows(payload);
+    if (!rows.length) throw new Error('Blockchair returned no funded-address rows for this page.');
+    return rows;
+  }
+
+  async function fetchBulkDashboard(addresses) {
+    const joined = addresses.map(encodeURIComponent).join(',');
+    const url = BLOCKCHAIR + '/dashboards/addresses/' + joined + '?limit=0';
+    const payload = await nativeGet(url, 18000);
+    if (!payload || !payload.data || typeof payload.data !== 'object') {
+      throw new Error('Blockchair returned an invalid address-dashboard response.');
+    }
+    return payload.data;
+  }
+
+  async function verifyLatestActivityWithEsplora(row) {
+    const encoded = encodeURIComponent(row.address);
+    const result = await firstSuccess([
+      async () => ({ provider: 'Blockstream', data: await nativeGet(BLOCKSTREAM + '/address/' + encoded + '/txs', 10000), base: 'https://blockstream.info/address/' }),
+      async () => ({ provider: 'mempool.space', data: await nativeGet(MEMPOOL + '/address/' + encoded + '/txs', 10000), base: 'https://mempool.space/address/' })
+    ]);
+
+    let latest = null;
     const txs = Array.isArray(result.data) ? result.data : [];
-    let last = null;
     for (const tx of txs) {
-      if (tx && tx.status && tx.status.confirmed && tx.status.block_time) {
-        last = Number(tx.status.block_time);
+      const t = tx && tx.status && tx.status.confirmed ? Number(tx.status.block_time) : 0;
+      if (t) {
+        latest = new Date(t * 1000);
         break;
       }
     }
 
-    const dormantYears = last
-      ? (Date.now() / 1000 - last) / (365.2425 * 86400)
-      : null;
-
     return {
-      address: summary.address,
-      chain: 'bitcoin',
-      chainName: 'Bitcoin',
-      symbol: 'BTC',
-      balance: summary.balance,
-      received: summary.received,
-      spent: summary.spent,
-      unconfirmed: summary.unconfirmed,
-      txCount: summary.txCount,
-      lastActivity: last ? new Date(last * 1000) : null,
-      dormantYears,
-      providers: [result.provider.name],
-      explorerUrl: result.provider.base.indexOf('mempool') >= 0
-        ? 'https://mempool.space/address/' + encodeURIComponent(summary.address)
-        : 'https://blockstream.info/address/' + encodeURIComponent(summary.address)
+      ...row,
+      lastActivity: latest || row.lastActivity,
+      dormantYears: latest ? (Date.now() - latest.getTime()) / (365.2425 * 86400000) : row.dormantYears,
+      providers: row.providers.concat(result.provider + ' verification'),
+      explorerUrl: result.base + encoded
     };
   }
 
-  async function mapLimit(items, limit, worker, progress) {
+  async function mapLimit(items, limit, worker, onProgress) {
     const results = new Array(items.length);
     let next = 0;
+    let finished = 0;
 
     async function run() {
       while (true) {
@@ -305,120 +238,190 @@
         } catch (e) {
           results[i] = { __error: e };
         }
-        if (progress) progress(i + 1, items.length);
+        finished += 1;
+        if (onProgress) onProgress(finished, items.length);
       }
     }
 
     const workers = [];
-    const count = Math.min(limit, items.length);
-    for (let i = 0; i < count; i++) workers.push(run());
+    for (let i = 0; i < Math.min(limit, items.length); i++) workers.push(run());
     await Promise.all(workers);
     return results;
   }
 
-  let v5SampleOffset = 0;
+  let scanPage = 0;
 
-  async function discoverWalletsV5(reset) {
-    if (reset) v5SampleOffset = 0;
+  async function discoverIndexed(reset) {
+    if (reset) scanPage = 0;
 
-    const years = Math.max(1, Number($v5('discoverYears').value || 10));
-    const min = Math.max(0, Number($v5('discoverMin').value || 0));
-    const maxResults = Math.max(1, Number($v5('discoverLimit').value || 5));
-    const sampleSize = Math.max(6, Number($v5('discoverSample').value || 18));
+    const years = Math.max(1, Number($v6('discoverYears').value || 10));
+    const minBtc = Math.max(0, Number($v6('discoverMin').value || 0));
+    const maxResults = Math.max(1, Number($v6('discoverLimit').value || 5));
+    const requestedSample = Math.max(6, Number($v6('discoverSample').value || 18));
+    const candidateLimit = Math.min(50, Math.max(20, requestedSample * 2));
 
-    const resultsBox = $v5('discoverResults');
-    if (resultsBox) resultsBox.innerHTML = '';
+    const resultBox = $v6('discoverResults');
+    if (resultBox) resultBox.innerHTML = '';
+
+    const offsets = [
+      OFFSET_LADDER[scanPage % OFFSET_LADDER.length],
+      OFFSET_LADDER[(scanPage + 1) % OFFSET_LADDER.length]
+    ];
+
+    const unique = new Map();
 
     try {
-      v5Notice('Connecting to multiple Bitcoin data providers…');
+      notice('Querying the funded-address index instead of random historical blocks…');
 
-      const block = await getHistoricalBlock(years, v5SampleOffset);
-      v5Notice(
-        'Historical block ' + block.height + ' found via ' + block.provider.name +
-        '. Sampling public outputs…'
-      );
+      for (let page = 0; page < offsets.length; page++) {
+        const offset = offsets[page];
+        notice('Loading funded address candidates · index offset ' + offset + '…');
 
-      const txs = await getBlockTransactions(block);
-      const candidates = collectCandidates(txs, sampleSize);
-      if (!candidates.length) {
-        throw new Error('No standard Bitcoin addresses were found in this block sample.');
+        const rows = await fetchIndexedCandidates(minBtc, candidateLimit, offset);
+        for (const row of rows) unique.set(row.address, row);
       }
 
-      v5Notice('Checking current balances for ' + candidates.length + ' public addresses…');
-      const summaries = await mapLimit(candidates, 4, currentAddressStats, (done, total) => {
-        v5Notice('Checking balances: ' + done + '/' + total + '…');
-      });
+      const candidates = Array.from(unique.values());
+      if (!candidates.length) throw new Error('No funded addresses were returned by the indexed provider.');
 
-      const funded = summaries
-        .filter((x) => x && !x.__error && Number.isFinite(x.balance) && x.balance >= min);
+      notice('Loaded ' + candidates.length + ' funded candidates. Checking last activity in bulk…');
 
-      if (!funded.length) {
-        if (typeof renderDiscoveredWallets === 'function') {
-          renderDiscoveredWallets([], {
-            date: block.timestamp ? new Date(block.timestamp * 1000).toLocaleDateString() : 'Approx. ' + years + ' years ago',
-            height: block.height
-          });
-        }
-        v5Notice('Finished. No addresses in this sample currently meet the ' + min + ' BTC minimum.');
-        return;
+      const allEntries = {};
+      const batches = chunks(candidates.map((x) => x.address), 12);
+      let batchesDone = 0;
+
+      for (const batch of batches) {
+        const data = await fetchBulkDashboard(batch);
+        Object.assign(allEntries, data);
+        batchesDone += 1;
+        notice('Checking indexed activity data: batch ' + batchesDone + '/' + batches.length + '…');
       }
 
-      v5Notice('Checking latest activity for ' + funded.length + ' funded address(es)…');
-      const detailed = await mapLimit(funded, 3, addLatestActivity, (done, total) => {
-        v5Notice('Checking last activity: ' + done + '/' + total + '…');
-      });
+      const parsed = [];
+      for (const c of candidates) {
+        const entry = allEntries[c.address] || allEntries[c.address.toLowerCase()];
+        const row = parseDashboardEntry(c.address, entry);
+        if (row) parsed.push(row);
+      }
 
-      const matches = detailed
-        .filter((x) => x && !x.__error && x.dormantYears != null && x.dormantYears >= years)
-        .slice(0, maxResults);
+      let matches = parsed
+        .filter((x) => x.balance != null && x.balance >= minBtc && x.dormantYears != null && x.dormantYears >= years)
+        .sort((a, b) => (b.balance || 0) - (a.balance || 0));
 
+      const needsVerification = matches.slice(0, Math.max(maxResults * 2, 8));
+      if (needsVerification.length) {
+        notice('Verifying the best ' + needsVerification.length + ' candidate(s) against an independent blockchain source…');
+        const verified = await mapLimit(needsVerification, 3, verifyLatestActivityWithEsplora, (done, total) => {
+          notice('Independent verification: ' + done + '/' + total + '…');
+        });
+
+        matches = verified
+          .filter((x) => x && !x.__error && x.balance >= minBtc && x.dormantYears != null && x.dormantYears >= years)
+          .sort((a, b) => (b.balance || 0) - (a.balance || 0));
+      }
+
+      const finalRows = matches.slice(0, maxResults);
       const meta = {
-        date: block.timestamp
-          ? new Date(block.timestamp * 1000).toLocaleDateString()
-          : 'Approx. ' + years + ' years ago',
-        height: block.height
+        date: 'Indexed funded-address search',
+        height: 'offsets ' + offsets.join(' + ')
       };
 
-      if (typeof renderDiscoveredWallets === 'function') {
-        renderDiscoveredWallets(matches, meta);
-      }
+      if (typeof renderDiscoveredWallets === 'function') renderDiscoveredWallets(finalRows, meta);
 
-      v5Notice(
-        matches.length
-          ? 'Finished. Found ' + matches.length + ' matching public wallet(s).'
-          : 'Finished. No matching dormant funded wallets in this sample. Try Scan another sample.',
-        matches.length ? 'success' : ''
-      );
+      if (finalRows.length) {
+        notice(
+          'Finished. Checked ' + candidates.length + ' funded candidates and found ' + finalRows.length +
+          ' address(es) matching the dormancy filter.',
+          'success'
+        );
+      } else {
+        notice(
+          'Finished. Checked ' + candidates.length + ' funded candidates. None matched ' + years +
+          '+ years of inactivity in these indexed pages. Tap Scan another sample to move deeper into the funded-address index.'
+        );
+      }
     } catch (e) {
-      v5Notice(
-        'Discovery failed: ' + (e && e.message ? e.message : String(e)) +
-        '. Tap Test data providers to see which service your phone can reach.',
-        'error'
-      );
+      let msg = e && e.message ? e.message : String(e);
+      if (/HTTP 430/.test(msg)) {
+        msg = 'Blockchair temporarily rate-limited this device. Wait a little, then try again. No random-block fallback was used.';
+      }
+      notice('Indexed discovery failed: ' + msg, 'error');
     }
   }
 
-  const discoverBtn = $v5('discoverBtn');
-  if (discoverBtn) discoverBtn.onclick = () => discoverWalletsV5(true);
+  async function testProviders() {
+    statusLine('Testing indexed search and blockchain verification providers…');
 
-  const anotherBtn = $v5('discoverAnotherBtn');
+    const tests = await Promise.all([
+      (async () => {
+        const start = Date.now();
+        try {
+          const payload = await nativeGet(BLOCKCHAIR + '/addresses?limit=1', 12000);
+          const ok = indexRows(payload).length > 0;
+          if (!ok) throw new Error('No indexed row returned');
+          return 'Blockchair index: OK (' + (Date.now() - start) + ' ms)';
+        } catch (e) {
+          return 'Blockchair index: FAILED (' + (e.message || e) + ')';
+        }
+      })(),
+      (async () => {
+        const start = Date.now();
+        try {
+          const height = Number(await nativeGet(BLOCKSTREAM + '/blocks/tip/height', 9000));
+          if (!Number.isFinite(height)) throw new Error('Invalid height');
+          return 'Blockstream: OK (' + (Date.now() - start) + ' ms, height ' + height + ')';
+        } catch (e) {
+          return 'Blockstream: FAILED (' + (e.message || e) + ')';
+        }
+      })()
+    ]);
+
+    const success = tests.some((x) => x.includes('Blockchair index: OK'));
+    statusLine(tests.join(' · '), success ? 'success' : 'error');
+  }
+
+  const panel = $v6('discoverPanel');
+  if (panel) {
+    const oldStatus = $v6('v5ProviderStatus');
+    if (oldStatus) oldStatus.remove();
+    const oldTest = $v6('v5NetworkTest');
+    if (oldTest) oldTest.textContent = 'Test indexed providers';
+
+    if (!$v6('v6ProviderStatus')) {
+      const status = document.createElement('div');
+      status.id = 'v6ProviderStatus';
+      status.className = 'notice hidden';
+      status.style.marginTop = '8px';
+      panel.appendChild(status);
+    }
+
+    const intro = panel.querySelector('.notice.warn');
+    if (intro) {
+      intro.innerHTML = 'Discovery now starts from a funded-address index, then checks actual activity history. Results are public-chain research only; dormant does not mean abandoned or claimable.';
+    }
+  }
+
+  const discoverBtn = $v6('discoverBtn');
+  if (discoverBtn) discoverBtn.onclick = () => discoverIndexed(true);
+
+  const anotherBtn = $v6('discoverAnotherBtn');
   if (anotherBtn) {
     anotherBtn.onclick = () => {
-      v5SampleOffset += 1;
-      discoverWalletsV5(false);
+      scanPage += 2;
+      discoverIndexed(false);
     };
   }
 
-  const testBtn = $v5('v5NetworkTest');
-  if (testBtn) testBtn.onclick = networkTest;
+  const testBtn = $v6('v5NetworkTest');
+  if (testBtn) testBtn.onclick = testProviders;
 
-  const resetBtn = $v5('v5ResetNetwork');
+  const resetBtn = $v6('v5ResetNetwork');
   if (resetBtn) {
     resetBtn.onclick = () => {
-      v5SampleOffset = 0;
-      const box = $v5('discoverResults');
+      scanPage = 0;
+      const box = $v6('discoverResults');
       if (box) box.innerHTML = '';
-      updateProviderLine('Scan offset reset. The next discovery starts from the selected dormancy period.');
+      statusLine('Indexed scan position reset to the first funded-address pages.');
     };
   }
 })();
