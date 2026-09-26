@@ -48,7 +48,7 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/4.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/5.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "Android");
         webView.setWebChromeClient(new WebChromeClient());
@@ -56,9 +56,20 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+
                 String v4 = readAsset("v4.js");
+                String walletFix = readAsset("walletfix.js");
+                StringBuilder injected = new StringBuilder();
+
                 if (v4 != null && !v4.isEmpty()) {
-                    view.evaluateJavascript(v4, null);
+                    injected.append(v4).append('\n');
+                }
+                if (walletFix != null && !walletFix.isEmpty()) {
+                    injected.append(walletFix).append('\n');
+                }
+
+                if (injected.length() > 0) {
+                    view.evaluateJavascript(injected.toString(), null);
                 }
             }
         });
@@ -117,10 +128,12 @@ public class MainActivity extends Activity {
         try {
             URI uri = URI.create(urlString);
             String host = uri.getHost();
+
             if (host == null || !ALLOWED_HOSTS.contains(host.toLowerCase())) {
                 sendLegacyNetworkResult(requestId, false, 0, "Host is not allowed by this app");
                 return;
             }
+
             if (!"https".equalsIgnoreCase(uri.getScheme())) {
                 sendLegacyNetworkResult(requestId, false, 0, "Only HTTPS requests are allowed");
                 return;
@@ -128,23 +141,30 @@ public class MainActivity extends Activity {
 
             connection = (HttpURLConnection) new URL(urlString).openConnection();
             connection.setRequestMethod("GET");
-            connection.setConnectTimeout(12000);
-            connection.setReadTimeout(20000);
+            connection.setConnectTimeout(7000);
+            connection.setReadTimeout(10000);
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/4.0");
+            connection.setRequestProperty("Accept-Encoding", "identity");
+            connection.setRequestProperty("Connection", "close");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/5.0");
 
             int status = connection.getResponseCode();
             InputStream input = status >= 200 && status < 400
                     ? connection.getInputStream()
                     : connection.getErrorStream();
+
             String responseBody = readText(input);
             boolean ok = status >= 200 && status < 300;
             sendLegacyNetworkResult(requestId, ok, status, responseBody);
         } catch (Exception e) {
-            sendLegacyNetworkResult(requestId, false, 0,
-                    e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
+            sendLegacyNetworkResult(
+                    requestId,
+                    false,
+                    0,
+                    e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage())
+            );
         } finally {
             if (connection != null) connection.disconnect();
         }
@@ -158,6 +178,7 @@ public class MainActivity extends Activity {
         HttpURLConnection connection = null;
         try {
             String normalizedMethod = method == null ? "GET" : method.trim().toUpperCase();
+
             if (!"GET".equals(normalizedMethod) && !"POST".equals(normalizedMethod)) {
                 sendV4NetworkResult(requestId, false, 0, "Only GET and POST are allowed");
                 return;
@@ -176,7 +197,7 @@ public class MainActivity extends Activity {
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/4.0");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/5.0");
 
             if (accessToken != null && !accessToken.trim().isEmpty()) {
                 connection.setRequestProperty("X-App-Token", accessToken.trim());
@@ -187,6 +208,7 @@ public class MainActivity extends Activity {
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                 connection.setFixedLengthStreamingMode(payload.length);
+
                 try (OutputStream output = connection.getOutputStream()) {
                     output.write(payload);
                 }
@@ -196,12 +218,17 @@ public class MainActivity extends Activity {
             InputStream input = status >= 200 && status < 400
                     ? connection.getInputStream()
                     : connection.getErrorStream();
+
             String responseBody = readText(input);
             boolean ok = status >= 200 && status < 300;
             sendV4NetworkResult(requestId, ok, status, responseBody);
         } catch (Exception e) {
-            sendV4NetworkResult(requestId, false, 0,
-                    e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
+            sendV4NetworkResult(
+                    requestId,
+                    false,
+                    0,
+                    e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage())
+            );
         } finally {
             if (connection != null) connection.disconnect();
         }
@@ -213,6 +240,7 @@ public class MainActivity extends Activity {
                 (ok ? "true" : "false") + "," +
                 status + "," +
                 JSONObject.quote(body == null ? "" : body) + ");";
+
         runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
@@ -222,34 +250,49 @@ public class MainActivity extends Activity {
                 (ok ? "true" : "false") + "," +
                 status + "," +
                 JSONObject.quote(body == null ? "" : body) + ");";
+
         runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
     private String readText(InputStream input) throws Exception {
         if (input == null) return "";
+
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int count;
-        while ((count = input.read(buffer)) != -1) out.write(buffer, 0, count);
+
+        while ((count = input.read(buffer)) != -1) {
+            out.write(buffer, 0, count);
+        }
+
         input.close();
         return out.toString(StandardCharsets.UTF_8.name());
     }
 
     private String readAsset(String name) {
         StringBuilder out = new StringBuilder();
+
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(getAssets().open(name)))) {
+
             String line;
-            while ((line = reader.readLine()) != null) out.append(line).append('\n');
+            while ((line = reader.readLine()) != null) {
+                out.append(line).append('\n');
+            }
+
         } catch (Exception e) {
             return "";
         }
+
         return out.toString();
     }
 
     @Override
     public void onBackPressed() {
-        if (webView != null && webView.canGoBack()) webView.goBack();
-        else super.onBackPressed();
+        if (webView != null && webView.canGoBack()) {
+            webView.goBack();
+        } else {
+            super.onBackPressed();
+        }
     }
 }
