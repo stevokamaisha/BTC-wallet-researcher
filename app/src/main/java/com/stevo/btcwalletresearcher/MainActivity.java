@@ -326,6 +326,9 @@ public class MainActivity extends Activity {
                 json.put("totalChecked", state.totalChecked);
                 json.put("keysPerSecond", state.keysPerSecond);
                 json.put("fractionChecked", Puzzle101Solver.fractionOfFullRange(state.totalChecked));
+                if (state.error != null && !state.error.isEmpty()) {
+                    json.put("error", state.error);
+                }
             }
 
             if (foundHex != null && !foundHex.isEmpty()) {
