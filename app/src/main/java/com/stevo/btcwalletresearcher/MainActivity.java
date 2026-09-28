@@ -63,12 +63,10 @@ public class MainActivity extends Activity {
                 StringBuilder injected = new StringBuilder();
 
                 if (v4 != null && !v4.isEmpty()) {
-                    injected.append(v4).append('
-');
+                    injected.append(v4).append(System.lineSeparator());
                 }
                 if (walletFix != null && !walletFix.isEmpty()) {
-                    injected.append(walletFix).append('
-');
+                    injected.append(walletFix).append(System.lineSeparator());
                 }
 
                 if (injected.length() > 0) {
@@ -382,8 +380,7 @@ public class MainActivity extends Activity {
 
             String line;
             while ((line = reader.readLine()) != null) {
-                out.append(line).append('
-');
+                out.append(line).append(System.lineSeparator());
             }
 
         } catch (Exception e) {
