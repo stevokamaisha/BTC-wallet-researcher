@@ -180,7 +180,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'crypto-claim-research-backend',
-    version: '7.0',
+    version: '10.0',
     model: OPENAI_MODEL,
     openaiConfigured: Boolean(OPENAI_API_KEY),
     accessTokenConfigured: Boolean(APP_ACCESS_TOKEN)
