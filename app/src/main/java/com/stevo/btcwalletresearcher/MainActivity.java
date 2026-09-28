@@ -49,7 +49,7 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/11.1");
+        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/11.2");
 
         webView.addJavascriptInterface(new NativeBridge(), "Android");
         webView.setWebChromeClient(new WebChromeClient());
@@ -186,7 +186,7 @@ public class MainActivity extends Activity {
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
             connection.setRequestProperty("Accept-Encoding", "identity");
             connection.setRequestProperty("Connection", "close");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/11.1");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/11.2");
 
             int status = connection.getResponseCode();
             InputStream input = status >= 200 && status < 400
@@ -235,7 +235,7 @@ public class MainActivity extends Activity {
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/11.1");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/11.2");
 
             if (accessToken != null && !accessToken.trim().isEmpty()) {
                 connection.setRequestProperty("X-App-Token", accessToken.trim());
@@ -325,6 +325,7 @@ public class MainActivity extends Activity {
                 json.put("sessionChecked", state.sessionChecked);
                 json.put("totalChecked", state.totalChecked);
                 json.put("keysPerSecond", state.keysPerSecond);
+                json.put("workerCount", state.workerCount);
                 json.put("fractionChecked", Puzzle101Solver.fractionOfFullRange(state.totalChecked));
                 if (state.error != null && !state.error.isEmpty()) {
                     json.put("error", state.error);
