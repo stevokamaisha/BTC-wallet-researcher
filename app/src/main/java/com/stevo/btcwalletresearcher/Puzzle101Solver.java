@@ -40,6 +40,7 @@ public final class Puzzle101Solver {
     private volatile long totalChecked;
     private volatile long sessionChecked;
     private volatile double lastSpeed;
+    private volatile String lastError = "";
 
     public interface Listener {
         void onState(State state);
@@ -53,13 +54,15 @@ public final class Puzzle101Solver {
         public final long sessionChecked;
         public final long totalChecked;
         public final double keysPerSecond;
+        public final String error;
 
-        State(boolean running, String currentHex, long sessionChecked, long totalChecked, double keysPerSecond) {
+        State(boolean running, String currentHex, long sessionChecked, long totalChecked, double keysPerSecond, String error) {
             this.running = running;
             this.currentHex = currentHex;
             this.sessionChecked = sessionChecked;
             this.totalChecked = totalChecked;
             this.keysPerSecond = keysPerSecond;
+            this.error = error == null ? "" : error;
         }
     }
 
@@ -88,6 +91,9 @@ public final class Puzzle101Solver {
         running.set(true);
         sessionChecked = 0L;
         lastSpeed = 0.0;
+        lastError = "";
+
+        if (listener != null) listener.onState(snapshot());
 
         worker = new Thread(() -> runSolver(listener), "Puzzle101Solver");
         worker.setPriority(Thread.NORM_PRIORITY);
@@ -106,6 +112,7 @@ public final class Puzzle101Solver {
         currentKey = RANGE_START.add(offset);
         sessionChecked = 0L;
         lastSpeed = 0.0;
+        lastError = "";
         saveCheckpoint();
         return snapshot();
     }
@@ -116,6 +123,7 @@ public final class Puzzle101Solver {
         sessionChecked = 0L;
         totalChecked = 0L;
         lastSpeed = 0.0;
+        lastError = "";
         saveCheckpoint();
         return snapshot();
     }
@@ -126,12 +134,14 @@ public final class Puzzle101Solver {
                 to64Hex(currentKey),
                 sessionChecked,
                 totalChecked,
-                lastSpeed
+                lastSpeed,
+                lastError
         );
     }
 
     public boolean selfTest() {
         try {
+            lastError = "";
             X9ECParameters params = CustomNamedCurves.getByName("secp256k1");
             if (params == null) return false;
             byte[] pub = params.getG().multiply(BigInteger.ONE).normalize().getEncoded(true);
@@ -234,11 +244,12 @@ public final class Puzzle101Solver {
             }
         } catch (Throwable t) {
             running.set(false);
-            listener.onError(t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage()));
+            lastError = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
+            if (listener != null) listener.onError(lastError);
         } finally {
             saveCheckpoint();
             running.set(false);
-            listener.onState(snapshot());
+            if (listener != null) listener.onState(snapshot());
         }
     }
 
