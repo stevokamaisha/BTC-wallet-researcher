@@ -11,7 +11,7 @@
     .replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 
   const h1 = document.querySelector('header h1');
-  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v11.1</span>';
+  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v11.2</span>';
 
   const sub = document.querySelector('header .sub');
   if (sub) sub.textContent = 'Bitcoin research + dedicated on-device Bitcoin Puzzle #101 solver';
@@ -567,7 +567,14 @@
     if (!Number.isFinite(n) || n <= 0) return 'Start the solver to measure';
     const years = PUZZLE101_RANGE_SIZE / n / (365.2425 * 86400);
     if (!Number.isFinite(years)) return 'Unknown';
-    return years.toExponential(3) + ' years at current phone speed';
+    if (years >= 1000000) {
+      const exponent = Math.floor(Math.log10(years));
+      const mantissa = years / Math.pow(10, exponent);
+      return mantissa.toFixed(2) + ' × 10^' + exponent +
+        ' years for the full range at current phone speed';
+    }
+    return years.toLocaleString(undefined, {maximumFractionDigits: 1}) +
+      ' years for the full range at current phone speed';
   }
 
   function renderPuzzle101State(state) {
@@ -579,6 +586,7 @@
     const speed = q('p101Speed');
     const session = q('p101Session');
     const total = q('p101Total');
+    const workers = q('p101Workers');
     const coverage = q('p101Coverage');
     const eta = q('p101Eta');
     const found = q('p101Found');
@@ -602,19 +610,24 @@
     if (speed) speed.textContent = formatPuzzleSpeed(state.keysPerSecond);
     if (session) session.textContent = formatPuzzleCount(state.sessionChecked);
     if (total) total.textContent = formatPuzzleCount(state.totalChecked);
+    if (workers) workers.textContent = String(state.workerCount || 0);
     if (coverage) coverage.textContent = formatPuzzleCoverage(state.fractionChecked);
     if (eta) eta.textContent = formatPuzzleEta(state.keysPerSecond);
 
     if (q('p101Start')) q('p101Start').disabled = !!state.running;
     if (q('p101Stop')) q('p101Stop').disabled = !state.running;
+    if (q('p101Random')) q('p101Random').disabled = !!state.running;
+    if (q('p101Reset')) q('p101Reset').disabled = !!state.running;
 
     if (found) {
       if (puzzle101LastFound) {
         found.classList.remove('hidden');
         found.innerHTML =
-          '<strong>MATCH FOUND.</strong><div class="tiny" style="margin-top:6px">Private key (hex), held locally on this device:</div>' +
-          '<div class="mono" style="margin-top:6px">' + esc(puzzle101LastFound) + '</div>' +
-          '<button id="p101CopyFound" class="btn" style="width:100%;margin-top:10px">Copy private key</button>';
+          '<strong>MATCH FOUND.</strong>' +
+          '<div class="tiny" style="margin-top:6px">The missing multiplier is:</div>' +
+          '<div class="mono" style="margin-top:6px"><strong>x = 0x' + esc(puzzle101LastFound) + '</strong></div>' +
+          '<div class="tiny muted" style="margin-top:6px">This is the Puzzle #101 private key, kept locally on this device.</div>' +
+          '<button id="p101CopyFound" class="btn" style="width:100%;margin-top:10px">Copy x</button>';
         const copyFound = q('p101CopyFound');
         if (copyFound) copyFound.onclick = () => {
           if (typeof copyText === 'function') copyText(puzzle101LastFound);
@@ -672,6 +685,14 @@
           <div class="kv"><span>Private-key interval</span><strong>101-bit puzzle</strong></div>
         </div>
 
+        <div class="label">Mathematical target</div>
+        <div class="notice">
+          <div><strong>Find x</strong> such that:</div>
+          <div class="mono tiny" style="margin-top:6px">2^100 ≤ x &lt; 2^101</div>
+          <div class="mono tiny" style="margin-top:6px">HASH160(compress(x × G)) = 7c1a77205c03b9909663b2034faa0b544e6bc96b</div>
+          <div class="tiny muted" style="margin-top:6px">G is the fixed secp256k1 generator. The unknown is x.</div>
+        </div>
+
         <div class="label">Published range</div>
         <div class="notice">
           <div class="tiny muted">Start</div>
@@ -686,8 +707,9 @@
           <div class="kv"><span>Speed</span><strong id="p101Speed">0 keys/s</strong></div>
           <div class="kv"><span>Checked this run</span><strong id="p101Session">0</strong></div>
           <div class="kv"><span>Total checked on this device</span><strong id="p101Total">0</strong></div>
+          <div class="kv"><span>Parallel CPU workers</span><strong id="p101Workers">0</strong></div>
           <div class="kv"><span>Range covered</span><strong id="p101Coverage">0%</strong></div>
-          <div class="label">Current / resume key</div>
+          <div class="label">Safe resume x</div>
           <div id="p101Current" class="mono tiny">10000000000000000000000000</div>
           <div class="label">Full-range estimate</div>
           <div id="p101Eta" class="tiny muted">Start the solver to measure</div>
@@ -709,9 +731,9 @@
         <div id="p101Found" class="notice success hidden" style="margin-top:10px"></div>
 
         <div class="notice warn" style="margin-top:10px">
-          The solver performs secp256k1 public-key generation and HASH160 comparisons entirely on your phone.
-          It can heat the device and drain the battery. Puzzle #101 has 2<sup>100</sup> possible keys, so a phone cannot realistically exhaust the complete range.
-          Stop the solver whenever the phone becomes hot.
+          v11.2 splits the published Puzzle #101 interval into non-overlapping chunks and searches them across multiple CPU cores.
+          It still performs secp256k1 public-key generation and HASH160 comparisons entirely on your phone.
+          This is substantially faster than the old single-thread build, but 2<sup>100</sup> remains an enormous search space. The phone can become hot and drain the battery quickly.
         </div>
       </div>
     `;
