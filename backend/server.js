@@ -601,6 +601,150 @@ app.get('/api/wallets/discover', async (req, res) => {
   }
 });
 
+
+function isLikelyBitcoinAddress(address) {
+  return /^(bc1)[0-9a-z]{20,90}$/i.test(address) ||
+         /^[13][a-km-zA-HJ-NP-Z1-9]{25,62}$/.test(address);
+}
+
+function normalizeEsploraAddress(address, info, txs, providerName, explorerBase) {
+  const chain = info?.chain_stats || {};
+  const mempool = info?.mempool_stats || {};
+  const funded = Number(chain.funded_txo_sum || 0);
+  const spent = Number(chain.spent_txo_sum || 0);
+  const memFunded = Number(mempool.funded_txo_sum || 0);
+  const memSpent = Number(mempool.spent_txo_sum || 0);
+
+  let latest = null;
+  if (Array.isArray(txs)) {
+    for (const tx of txs) {
+      const t = tx?.status?.confirmed ? Number(tx?.status?.block_time || 0) : 0;
+      if (t) {
+        latest = new Date(t * 1000);
+        break;
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    address,
+    chain: 'bitcoin',
+    chainName: 'Bitcoin',
+    symbol: 'BTC',
+    balance: (funded - spent + memFunded - memSpent) / 1e8,
+    received: funded / 1e8,
+    spent: spent / 1e8,
+    unconfirmed: (memFunded - memSpent) / 1e8,
+    txCount: Number(chain.tx_count || 0) + Number(mempool.tx_count || 0),
+    lastActivity: latest ? latest.toISOString() : null,
+    dormantYears: latest ? yearsAgo(latest) : null,
+    providers: [providerName],
+    explorerUrl: explorerBase + encodeURIComponent(address)
+  };
+}
+
+async function lookupBitcoinEsplora(address, base, providerName, explorerBase) {
+  const encoded = encodeURIComponent(address);
+  const [infoResult, txResult] = await Promise.all([
+    fetchWithTimeout(base + '/address/' + encoded, { accept: 'application/json' }, 12000),
+    fetchWithTimeout(base + '/address/' + encoded + '/txs', { accept: 'application/json' }, 12000)
+  ]);
+
+  return normalizeEsploraAddress(
+    address,
+    JSON.parse(infoResult.text),
+    JSON.parse(txResult.text),
+    providerName,
+    explorerBase
+  );
+}
+
+async function lookupBitcoinBlockCypher(address) {
+  const encoded = encodeURIComponent(address);
+  const { text } = await fetchWithTimeout(
+    'https://api.blockcypher.com/v1/btc/main/addrs/' + encoded + '?limit=50',
+    { accept: 'application/json' },
+    12000
+  );
+  const data = JSON.parse(text);
+
+  let latest = null;
+  for (const ref of [...(data.txrefs || []), ...(data.unconfirmed_txrefs || [])]) {
+    if (!ref?.confirmed) continue;
+    const d = new Date(ref.confirmed);
+    if (!Number.isNaN(d.getTime()) && (!latest || d > latest)) latest = d;
+  }
+
+  return {
+    ok: true,
+    address,
+    chain: 'bitcoin',
+    chainName: 'Bitcoin',
+    symbol: 'BTC',
+    balance: Number(data.final_balance ?? data.balance ?? 0) / 1e8,
+    received: Number(data.total_received || 0) / 1e8,
+    spent: Number(data.total_sent || 0) / 1e8,
+    unconfirmed: Number(data.unconfirmed_balance || 0) / 1e8,
+    txCount: Number(data.final_n_tx ?? data.n_tx ?? 0),
+    lastActivity: latest ? latest.toISOString() : null,
+    dormantYears: latest ? yearsAgo(latest) : null,
+    providers: ['BlockCypher fallback'],
+    explorerUrl: 'https://live.blockcypher.com/btc/address/' + encoded + '/'
+  };
+}
+
+app.get('/api/wallets/address/:address', async (req, res) => {
+  const address = String(req.params.address || '').trim();
+  const chain = String(req.query.chain || 'bitcoin').trim().toLowerCase();
+
+  if (chain !== 'bitcoin') {
+    return res.status(400).json({
+      error: 'This reliable lookup endpoint currently supports Bitcoin only.'
+    });
+  }
+
+  if (!isLikelyBitcoinAddress(address)) {
+    return res.status(400).json({
+      error: 'Enter a full valid-looking Bitcoin address, not a ticker or abbreviation.'
+    });
+  }
+
+  const errors = [];
+
+  const providers = [
+    async () => lookupBitcoinEsplora(
+      address,
+      'https://blockstream.info/api',
+      'Blockstream',
+      'https://blockstream.info/address/'
+    ),
+    async () => lookupBitcoinEsplora(
+      address,
+      'https://mempool.space/api',
+      'mempool.space',
+      'https://mempool.space/address/'
+    ),
+    async () => lookupBitcoinBlockCypher(address)
+  ];
+
+  for (const provider of providers) {
+    try {
+      const result = await provider();
+      result.providerErrors = errors;
+      result.partial = errors.length > 0;
+      return res.json(result);
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+
+  return res.status(502).json({
+    error: 'All Bitcoin data providers are temporarily unavailable.',
+    providerErrors: errors
+  });
+});
+
 app.use((req, res) => res.status(404).json({ error: 'Not found.' }));
 
 app.listen(PORT, '0.0.0.0', () => {
