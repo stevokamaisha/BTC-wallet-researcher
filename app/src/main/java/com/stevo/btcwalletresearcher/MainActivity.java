@@ -143,6 +143,13 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void puzzle101Reset() {
+            if (puzzle101Solver == null) return;
+            Puzzle101Solver.State state = puzzle101Solver.resetToRangeStart();
+            sendPuzzle101State(state, null, null);
+        }
+
+        @JavascriptInterface
         public String puzzle101State() {
             if (puzzle101Solver == null) return "{}";
             return puzzle101StateJson(puzzle101Solver.snapshot(), null, null).toString();
