@@ -1,6 +1,6 @@
 {
   "name": "crypto-claim-research-backend",
-  "version": "7.0.0",
+  "version": "10.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
     "express": "^5.1.0"
   }
 }
