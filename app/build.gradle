@@ -10,7 +10,11 @@ android {
         applicationId 'com.stevo.btcwalletresearcher'
         minSdk 23
         targetSdk 35
-        versionCode 10
-        versionName '10.0'
+        versionCode 11
+        versionName '11.0'
     }
+}
+
+dependencies {
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
 }
