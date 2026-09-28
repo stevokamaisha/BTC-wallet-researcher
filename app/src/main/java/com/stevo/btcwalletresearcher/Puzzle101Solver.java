@@ -25,6 +25,7 @@ public final class Puzzle101Solver {
     private static final BigInteger RANGE_END = new BigInteger(RANGE_END_HEX, 16);
     private static final BigInteger RANGE_SIZE = BigInteger.ONE.shiftLeft(100);
     private static final BigInteger ONE = BigInteger.ONE;
+    private static final int EC_BATCH = 256;
 
     private static final String PREFS = "puzzle101_solver";
     private static final String PREF_CURRENT = "current_hex";
@@ -109,6 +110,16 @@ public final class Puzzle101Solver {
         return snapshot();
     }
 
+    public synchronized State resetToRangeStart() {
+        running.set(false);
+        currentKey = RANGE_START;
+        sessionChecked = 0L;
+        totalChecked = 0L;
+        lastSpeed = 0.0;
+        saveCheckpoint();
+        return snapshot();
+    }
+
     public State snapshot() {
         return new State(
                 running.get(),
@@ -139,54 +150,87 @@ public final class Puzzle101Solver {
 
             ECPoint generator = params.getG();
             BigInteger key = currentKey;
-            ECPoint point = generator.multiply(key).normalize();
+            ECPoint point = generator.multiply(key);
 
             byte[] targetHash160 = hexToBytes(TARGET_HASH160_HEX);
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            RIPEMD160Digest ripemd = new RIPEMD160Digest();
+
             long reportStarted = System.nanoTime();
             long reportChecked = 0L;
             long checkpointAt = System.nanoTime();
 
             listener.onState(snapshot());
 
-            while (running.get()) {
-                if (key.compareTo(RANGE_END) > 0) {
-                    key = RANGE_START;
-                    point = generator.multiply(key).normalize();
+            while (running.get() && key.compareTo(RANGE_END) <= 0) {
+                BigInteger remaining = RANGE_END.subtract(key).add(ONE);
+                int count = remaining.compareTo(BigInteger.valueOf(EC_BATCH)) < 0
+                        ? remaining.intValue()
+                        : EC_BATCH;
+
+                ECPoint[] points = new ECPoint[count];
+                ECPoint nextPoint = point;
+                for (int i = 0; i < count; i++) {
+                    points[i] = nextPoint;
+                    nextPoint = nextPoint.add(generator);
                 }
 
-                byte[] compressedPublicKey = point.normalize().getEncoded(true);
-                byte[] candidateHash160 = hash160(compressedPublicKey);
+                params.getCurve().normalizeAll(points, 0, count, null);
 
-                if (Arrays.equals(candidateHash160, targetHash160)) {
-                    currentKey = key;
-                    running.set(false);
-                    saveCheckpoint();
-                    listener.onFound(snapshot(), to64Hex(key));
-                    return;
+                int processed = 0;
+                for (int i = 0; i < count && running.get(); i++) {
+                    BigInteger candidate = key.add(BigInteger.valueOf(i));
+                    currentKey = candidate;
+
+                    byte[] compressedPublicKey = points[i].getEncoded(true);
+                    byte[] sha = sha256.digest(compressedPublicKey);
+                    ripemd.update(sha, 0, sha.length);
+                    byte[] candidateHash160 = new byte[20];
+                    ripemd.doFinal(candidateHash160, 0);
+
+                    if (Arrays.equals(candidateHash160, targetHash160)) {
+                        currentKey = candidate;
+                        running.set(false);
+                        saveCheckpoint();
+                        listener.onFound(snapshot(), to64Hex(candidate));
+                        return;
+                    }
+
+                    processed++;
+                    sessionChecked++;
+                    totalChecked++;
+                    reportChecked++;
+
+                    long now = System.nanoTime();
+
+                    if (now - reportStarted >= 1_000_000_000L) {
+                        double seconds = (now - reportStarted) / 1_000_000_000.0;
+                        lastSpeed = reportChecked / Math.max(0.001, seconds);
+                        reportStarted = now;
+                        reportChecked = 0L;
+                        listener.onState(snapshot());
+                    }
+
+                    if (now - checkpointAt >= 4_000_000_000L) {
+                        currentKey = candidate.add(ONE);
+                        saveCheckpoint();
+                        currentKey = candidate;
+                        checkpointAt = now;
+                    }
                 }
 
-                key = key.add(ONE);
-                point = point.add(generator);
+                key = key.add(BigInteger.valueOf(processed));
                 currentKey = key;
 
-                sessionChecked++;
-                totalChecked++;
-                reportChecked++;
-
-                long now = System.nanoTime();
-
-                if (now - reportStarted >= 1_000_000_000L) {
-                    double seconds = (now - reportStarted) / 1_000_000_000.0;
-                    lastSpeed = reportChecked / Math.max(0.001, seconds);
-                    reportStarted = now;
-                    reportChecked = 0L;
-                    listener.onState(snapshot());
+                if (processed == count) {
+                    point = nextPoint;
+                } else if (key.compareTo(RANGE_END) <= 0) {
+                    point = generator.multiply(key);
                 }
+            }
 
-                if (now - checkpointAt >= 10_000_000_000L) {
-                    saveCheckpoint();
-                    checkpointAt = now;
-                }
+            if (key.compareTo(RANGE_END) > 0) {
+                currentKey = RANGE_END;
             }
         } catch (Throwable t) {
             running.set(false);
