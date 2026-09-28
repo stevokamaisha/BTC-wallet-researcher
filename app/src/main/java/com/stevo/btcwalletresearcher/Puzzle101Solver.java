@@ -12,32 +12,40 @@ import java.math.BigInteger;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.AtomicReferenceArray;
 
 public final class Puzzle101Solver {
-    public static final String TARGET_ADDRESS = "1CKCVdbDJasYmhswB6HKZHEAnNaDpK7W4n";
-    public static final String RANGE_START_HEX = "10000000000000000000000000";
-    public static final String RANGE_END_HEX = "1fffffffffffffffffffffffff";
-    public static final String TARGET_HASH160_HEX = "7c1a77205c03b9909663b2034faa0b544e6bc96b";
+    // Legacy class name retained so the Android bridge remains compatible.
+    // The engine itself is now fixed to the public Bitcoin Puzzle #140.
+    public static final String TARGET_ADDRESS = "1QKBaU6WAeycb3DbKbLBkX7vJiaS8r42Xo";
+    public static final String PUBLIC_KEY_HEX =
+            "031f6a332d3c5c4f2de2378c012f429cd109ba07d69690c6c701b6bb87860d6640";
+    public static final String TARGET_HASH160_HEX =
+            "ffbb35a7bb9bbe16c1aa2534f7ff11d59c8e3d1a";
+    public static final String RANGE_START_HEX = "80000000000000000000000000000000000";
+    public static final String RANGE_END_HEX = "fffffffffffffffffffffffffffffffffff";
 
     private static final BigInteger RANGE_START = new BigInteger(RANGE_START_HEX, 16);
     private static final BigInteger RANGE_END = new BigInteger(RANGE_END_HEX, 16);
-    private static final BigInteger RANGE_SIZE = BigInteger.ONE.shiftLeft(100);
-    private static final BigInteger ONE = BigInteger.ONE;
+    private static final BigInteger RANGE_SIZE =
+            RANGE_END.subtract(RANGE_START).add(BigInteger.ONE);
 
-    // Larger batches reduce the cost of elliptic-curve normalization.
-    private static final int EC_BATCH = 512;
-    // Workers claim non-overlapping contiguous chunks. This avoids duplicate work
-    // while keeping expensive scalar multiplication to roughly one per chunk.
-    private static final int CHUNK_SIZE = 1 << 16;
+    // Pollard's Kangaroo parameters. Puzzle #140's interval contains 2^139
+    // candidates, so expected work is on the order of sqrt(2^139) = 2^69.5.
+    private static final int JUMP_COUNT = 32;
+    private static final int DP_BITS = 10;
+    private static final BigInteger DP_MASK =
+            BigInteger.ONE.shiftLeft(DP_BITS).subtract(BigInteger.ONE);
+    private static final int MAX_POINTS_PER_HERD = 30000;
 
-    private static final String PREFS = "puzzle101_solver";
-    private static final String PREF_CURRENT = "current_hex";
-    private static final String PREF_TOTAL = "total_checked";
+    private static final String PREFS = "puzzle140_kangaroo";
+    private static final String PREF_TOTAL = "total_jumps";
 
     private final SharedPreferences prefs;
     private final SecureRandom secureRandom = new SecureRandom();
@@ -45,15 +53,28 @@ public final class Puzzle101Solver {
     private final AtomicLong sessionCounter = new AtomicLong(0L);
     private final AtomicLong totalCounter = new AtomicLong(0L);
     private final AtomicReference<String> foundHex = new AtomicReference<>(null);
-    private final Object chunkLock = new Object();
+
+    private final Map<String, BigInteger> tamePoints =
+            Collections.synchronizedMap(new BoundedPointMap());
+    private final Map<String, BigInteger> wildPoints =
+            Collections.synchronizedMap(new BoundedPointMap());
 
     private volatile Thread supervisor;
-    private volatile BigInteger currentKey;
-    private volatile BigInteger nextChunkStart;
-    private volatile AtomicReferenceArray<BigInteger> workerPositions = new AtomicReferenceArray<>(0);
     private volatile double lastSpeed;
     private volatile String lastError = "";
     private volatile int activeWorkerCount;
+    private volatile long runNonce;
+
+    private static final class BoundedPointMap extends LinkedHashMap<String, BigInteger> {
+        BoundedPointMap() {
+            super(1024, 0.75f, true);
+        }
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, BigInteger> eldest) {
+            return size() > MAX_POINTS_PER_HERD;
+        }
+    }
 
     public interface Listener {
         void onState(State state);
@@ -69,6 +90,8 @@ public final class Puzzle101Solver {
         public final double keysPerSecond;
         public final String error;
         public final int workerCount;
+        public final int distinguishedPoints;
+        public final String algorithm;
 
         State(
                 boolean running,
@@ -77,7 +100,9 @@ public final class Puzzle101Solver {
                 long totalChecked,
                 double keysPerSecond,
                 String error,
-                int workerCount
+                int workerCount,
+                int distinguishedPoints,
+                String algorithm
         ) {
             this.running = running;
             this.currentHex = currentHex;
@@ -86,27 +111,15 @@ public final class Puzzle101Solver {
             this.keysPerSecond = keysPerSecond;
             this.error = error == null ? "" : error;
             this.workerCount = workerCount;
+            this.distinguishedPoints = distinguishedPoints;
+            this.algorithm = algorithm;
         }
     }
 
     public Puzzle101Solver(Context context) {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-
-        String stored = prefs.getString(PREF_CURRENT, RANGE_START_HEX);
-        BigInteger restored;
-        try {
-            restored = new BigInteger(stored, 16);
-        } catch (Exception ignored) {
-            restored = RANGE_START;
-        }
-
-        if (restored.compareTo(RANGE_START) < 0 || restored.compareTo(RANGE_END) > 0) {
-            restored = RANGE_START;
-        }
-
-        currentKey = restored;
-        nextChunkStart = restored;
         totalCounter.set(Math.max(0L, prefs.getLong(PREF_TOTAL, 0L)));
+        runNonce = Math.abs(secureRandom.nextLong());
     }
 
     public synchronized void start(Listener listener) {
@@ -115,23 +128,23 @@ public final class Puzzle101Solver {
             return;
         }
 
-        int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
-        // Use the phone aggressively, but cap at 8 workers so the UI remains usable.
-        activeWorkerCount = Math.max(1, Math.min(8, cores));
-
         sessionCounter.set(0L);
         lastSpeed = 0.0;
         lastError = "";
         foundHex.set(null);
-        nextChunkStart = currentKey;
-        workerPositions = new AtomicReferenceArray<>(activeWorkerCount);
+        tamePoints.clear();
+        wildPoints.clear();
+        runNonce = Math.abs(secureRandom.nextLong());
+
+        int cores = Math.max(2, Runtime.getRuntime().availableProcessors());
+        activeWorkerCount = Math.max(2, Math.min(6, cores));
         running.set(true);
 
         if (listener != null) listener.onState(snapshot());
 
         supervisor = new Thread(
-                () -> runParallelSolver(listener, activeWorkerCount),
-                "Puzzle101Supervisor"
+                () -> runKangaroo(listener, activeWorkerCount),
+                "Puzzle140KangarooSupervisor"
         );
         supervisor.setPriority(Thread.NORM_PRIORITY);
         supervisor.start();
@@ -139,49 +152,55 @@ public final class Puzzle101Solver {
 
     public synchronized void stop(Listener listener) {
         running.set(false);
-        currentKey = computeSafeResumeKey();
-        saveCheckpoint();
+        saveCounters();
         if (listener != null) listener.onState(snapshot());
     }
 
+    // Kept for the existing UI bridge. For Kangaroo this starts a fresh
+    // randomized set of wild walks rather than selecting a brute-force shard.
     public synchronized State newRandomShard() {
         running.set(false);
-        BigInteger offset = new BigInteger(100, secureRandom);
-        currentKey = RANGE_START.add(offset);
-        nextChunkStart = currentKey;
+        tamePoints.clear();
+        wildPoints.clear();
         sessionCounter.set(0L);
         lastSpeed = 0.0;
         lastError = "";
         foundHex.set(null);
+        runNonce = Math.abs(secureRandom.nextLong());
         activeWorkerCount = 0;
-        saveCheckpoint();
+        saveCounters();
         return snapshot();
     }
 
     public synchronized State resetToRangeStart() {
         running.set(false);
-        currentKey = RANGE_START;
-        nextChunkStart = RANGE_START;
+        tamePoints.clear();
+        wildPoints.clear();
         sessionCounter.set(0L);
         totalCounter.set(0L);
         lastSpeed = 0.0;
         lastError = "";
         foundHex.set(null);
+        runNonce = 0L;
         activeWorkerCount = 0;
-        saveCheckpoint();
+        saveCounters();
         return snapshot();
     }
 
     public State snapshot() {
-        BigInteger safe = running.get() ? computeSafeResumeKey() : currentKey;
+        String current = foundHex.get();
+        if (current == null) current = RANGE_START_HEX;
+
         return new State(
                 running.get(),
-                to64Hex(safe),
+                current,
                 sessionCounter.get(),
                 totalCounter.get(),
                 lastSpeed,
                 lastError,
-                activeWorkerCount
+                activeWorkerCount,
+                tamePoints.size() + wildPoints.size(),
+                "Pollard's Kangaroo"
         );
     }
 
@@ -189,251 +208,333 @@ public final class Puzzle101Solver {
         try {
             lastError = "";
             X9ECParameters params = CustomNamedCurves.getByName("secp256k1");
-            if (params == null) return false;
+            if (params == null) {
+                lastError = "secp256k1 is unavailable.";
+                return false;
+            }
 
-            // Known Bitcoin compressed public key HASH160 for private key x = 1.
-            byte[] pub = params.getG().multiply(BigInteger.ONE).normalize().getEncoded(true);
-            byte[] actual = hash160(pub);
-            byte[] expected = hexToBytes("751e76e8199196d454941c45d1b3a323f1433bd6");
-            return Arrays.equals(actual, expected);
-        } catch (Exception e) {
-            lastError = e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage());
+            byte[] expectedPub = hexToBytes(PUBLIC_KEY_HEX);
+            ECPoint point = params.getCurve().decodePoint(expectedPub).normalize();
+
+            if (!Arrays.equals(point.getEncoded(true), expectedPub)) {
+                lastError = "Published public key could not be decoded.";
+                return false;
+            }
+
+            byte[] actualHash160 = hash160(expectedPub);
+            byte[] expectedHash160 = hexToBytes(TARGET_HASH160_HEX);
+
+            if (!Arrays.equals(actualHash160, expectedHash160)) {
+                lastError = "Public key does not match the published Puzzle #140 address.";
+                return false;
+            }
+
+            return true;
+        } catch (Throwable t) {
+            lastError = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
             return false;
         }
     }
 
-    private void runParallelSolver(Listener listener, int workerCount) {
-        Thread[] workers = new Thread[workerCount];
+    private void runKangaroo(Listener listener, int workerCount) {
+        Thread tameThread = null;
+        Thread[] wildThreads = new Thread[Math.max(1, workerCount - 1)];
 
         try {
             X9ECParameters params = CustomNamedCurves.getByName("secp256k1");
-            if (params == null) throw new IllegalStateException("secp256k1 is unavailable.");
+            if (params == null) {
+                throw new IllegalStateException("secp256k1 is unavailable.");
+            }
 
-            ECPoint generator = params.getG();
-            byte[] targetHash160 = hexToBytes(TARGET_HASH160_HEX);
+            ECPoint generator = params.getG().normalize();
+            ECPoint target = params.getCurve()
+                    .decodePoint(hexToBytes(PUBLIC_KEY_HEX))
+                    .normalize();
 
-            for (int i = 0; i < workerCount; i++) {
+            BigInteger[] jumps = buildJumpScalars();
+            ECPoint[] jumpPoints = new ECPoint[JUMP_COUNT];
+
+            for (int i = 0; i < JUMP_COUNT; i++) {
+                jumpPoints[i] = generator.multiply(jumps[i]).normalize();
+            }
+
+            tameThread = new Thread(
+                    () -> runTame(generator, target, jumps, jumpPoints),
+                    "Puzzle140Tame"
+            );
+            tameThread.setPriority(Thread.NORM_PRIORITY);
+            tameThread.start();
+
+            for (int i = 0; i < wildThreads.length; i++) {
                 final int workerId = i;
-                workers[i] = new Thread(
-                        () -> runWorker(workerId, params, generator, targetHash160),
-                        "Puzzle101Worker-" + i
+                wildThreads[i] = new Thread(
+                        () -> runWild(
+                                workerId,
+                                generator,
+                                target,
+                                jumps,
+                                jumpPoints
+                        ),
+                        "Puzzle140Wild-" + workerId
                 );
-                workers[i].setPriority(Thread.NORM_PRIORITY);
-                workers[i].start();
+                wildThreads[i].setPriority(Thread.NORM_PRIORITY);
+                wildThreads[i].start();
             }
 
             long lastReportAt = System.nanoTime();
             long lastReportCount = sessionCounter.get();
-            long lastCheckpointAt = lastReportAt;
 
-            while (true) {
-                boolean anyAlive = false;
-                for (Thread worker : workers) {
-                    if (worker != null && worker.isAlive()) {
-                        anyAlive = true;
-                        break;
-                    }
-                }
-
-                if (!anyAlive) break;
-
+            while (running.get()) {
                 try {
                     Thread.sleep(250L);
-                } catch (InterruptedException ignored) {
+                } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     running.set(false);
+                    break;
                 }
 
                 long now = System.nanoTime();
                 if (now - lastReportAt >= 1_000_000_000L) {
                     long checked = sessionCounter.get();
                     double seconds = (now - lastReportAt) / 1_000_000_000.0;
-                    lastSpeed = (checked - lastReportCount) / Math.max(0.001, seconds);
+                    lastSpeed =
+                            (checked - lastReportCount) / Math.max(0.001, seconds);
                     lastReportCount = checked;
                     lastReportAt = now;
 
-                    currentKey = computeSafeResumeKey();
+                    saveCounters();
                     if (listener != null) listener.onState(snapshot());
                 }
 
-                if (now - lastCheckpointAt >= 4_000_000_000L) {
-                    currentKey = computeSafeResumeKey();
-                    saveCheckpoint();
-                    lastCheckpointAt = now;
+                boolean anyWildAlive = false;
+                for (Thread worker : wildThreads) {
+                    if (worker != null && worker.isAlive()) {
+                        anyWildAlive = true;
+                        break;
+                    }
+                }
+
+                if (!anyWildAlive) {
+                    running.set(false);
+                    break;
                 }
             }
 
-            for (Thread worker : workers) {
+            if (tameThread != null) {
+                try {
+                    tameThread.join(400L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            for (Thread worker : wildThreads) {
                 if (worker == null) continue;
                 try {
-                    worker.join(250L);
+                    worker.join(400L);
                 } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
                 }
             }
 
             String found = foundHex.get();
-            if (found != null) {
-                currentKey = new BigInteger(found, 16);
-                running.set(false);
-                saveCheckpoint();
-                if (listener != null) listener.onFound(snapshot(), found);
-                return;
+            if (found != null && listener != null) {
+                listener.onFound(snapshot(), found);
             }
-
-            currentKey = computeSafeResumeKey();
         } catch (Throwable t) {
             running.set(false);
-            lastError = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
+            lastError =
+                    t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
             if (listener != null) listener.onError(lastError);
         } finally {
             running.set(false);
-            currentKey = foundHex.get() != null
-                    ? new BigInteger(foundHex.get(), 16)
-                    : computeSafeResumeKey();
-            saveCheckpoint();
+            saveCounters();
             if (listener != null) listener.onState(snapshot());
         }
     }
 
-    private void runWorker(
-            int workerId,
-            X9ECParameters params,
+    private void runTame(
             ECPoint generator,
-            byte[] targetHash160
+            ECPoint target,
+            BigInteger[] jumps,
+            ECPoint[] jumpPoints
     ) {
         try {
-            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-            RIPEMD160Digest ripemd = new RIPEMD160Digest();
+            ECPoint point = generator.multiply(RANGE_END).normalize();
+            BigInteger distance = BigInteger.ZERO;
 
             while (running.get()) {
-                BigInteger chunkStart = claimChunk(workerId);
-                if (chunkStart == null) return;
+                ECPoint normalized = point.normalize();
+                BigInteger x = normalized.getAffineXCoord().toBigInteger();
 
-                BigInteger chunkEnd = chunkStart
-                        .add(BigInteger.valueOf(CHUNK_SIZE - 1L))
-                        .min(RANGE_END);
+                if (isDistinguished(x)) {
+                    String key = pointKey(normalized);
+                    BigInteger wildDistance = wildPoints.get(key);
 
-                BigInteger key = chunkStart;
-                ECPoint point = generator.multiply(key);
-
-                while (running.get() && key.compareTo(chunkEnd) <= 0) {
-                    BigInteger remaining = chunkEnd.subtract(key).add(ONE);
-                    int count = remaining.compareTo(BigInteger.valueOf(EC_BATCH)) < 0
-                            ? remaining.intValue()
-                            : EC_BATCH;
-
-                    ECPoint[] points = new ECPoint[count];
-                    ECPoint nextPoint = point;
-
-                    for (int i = 0; i < count; i++) {
-                        points[i] = nextPoint;
-                        nextPoint = nextPoint.add(generator);
+                    if (wildDistance != null &&
+                            testCandidate(
+                                    RANGE_END.add(distance).subtract(wildDistance),
+                                    generator,
+                                    target
+                            )) {
+                        return;
                     }
 
-                    params.getCurve().normalizeAll(points, 0, count, null);
-
-                    int processed = 0;
-                    for (int i = 0; i < count && running.get(); i++) {
-                        BigInteger candidate = key.add(BigInteger.valueOf(i));
-
-                        byte[] compressedPublicKey = points[i].getEncoded(true);
-                        byte[] sha = sha256.digest(compressedPublicKey);
-                        ripemd.update(sha, 0, sha.length);
-
-                        byte[] candidateHash160 = new byte[20];
-                        ripemd.doFinal(candidateHash160, 0);
-
-                        if (Arrays.equals(candidateHash160, targetHash160)) {
-                            String match = to64Hex(candidate);
-                            if (foundHex.compareAndSet(null, match)) {
-                                currentKey = candidate;
-                                workerPositions.set(workerId, candidate);
-                                running.set(false);
-                            }
-                            return;
-                        }
-
-                        processed++;
-                        sessionCounter.incrementAndGet();
-                        totalCounter.incrementAndGet();
-
-                        // Publish progress often enough to make a manual stop safe.
-                        if ((processed & 63) == 0) {
-                            workerPositions.set(workerId, candidate.add(ONE));
-                        }
-                    }
-
-                    key = key.add(BigInteger.valueOf(processed));
-                    workerPositions.set(workerId, key);
-
-                    if (processed == count) {
-                        point = nextPoint;
-                    } else if (running.get() && key.compareTo(chunkEnd) <= 0) {
-                        point = generator.multiply(key);
-                    }
+                    tamePoints.put(key, distance);
                 }
 
-                if (key.compareTo(chunkEnd) > 0) {
-                    workerPositions.set(workerId, null);
-                }
+                int index = jumpIndex(x);
+                point = normalized.add(jumpPoints[index]);
+                distance = distance.add(jumps[index]);
+                countJump();
             }
         } catch (Throwable t) {
-            if (lastError == null || lastError.isEmpty()) {
-                lastError = "Worker " + (workerId + 1) + ": " +
-                        t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
+            setWorkerError("Tame", t);
+        }
+    }
+
+    private void runWild(
+            int workerId,
+            ECPoint generator,
+            ECPoint target,
+            BigInteger[] jumps,
+            ECPoint[] jumpPoints
+    ) {
+        try {
+            BigInteger offset = initialWildOffset(workerId);
+            ECPoint point =
+                    target.add(generator.multiply(offset)).normalize();
+            BigInteger distance = offset;
+
+            while (running.get()) {
+                ECPoint normalized = point.normalize();
+                BigInteger x = normalized.getAffineXCoord().toBigInteger();
+
+                if (isDistinguished(x)) {
+                    String key = pointKey(normalized);
+                    BigInteger tameDistance = tamePoints.get(key);
+
+                    if (tameDistance != null &&
+                            testCandidate(
+                                    RANGE_END.add(tameDistance).subtract(distance),
+                                    generator,
+                                    target
+                            )) {
+                        return;
+                    }
+
+                    // This also allows a tame walk that arrives later to detect
+                    // the collision, avoiding a race between the two herds.
+                    wildPoints.put(key, distance);
+                }
+
+                int index = jumpIndex(x);
+                point = normalized.add(jumpPoints[index]);
+                distance = distance.add(jumps[index]);
+                countJump();
             }
+        } catch (Throwable t) {
+            setWorkerError("Wild " + (workerId + 1), t);
+        }
+    }
+
+    private boolean testCandidate(
+            BigInteger candidate,
+            ECPoint generator,
+            ECPoint target
+    ) {
+        if (candidate.compareTo(RANGE_START) < 0 ||
+                candidate.compareTo(RANGE_END) > 0) {
+            return false;
+        }
+
+        ECPoint check = generator.multiply(candidate).normalize();
+        if (!check.equals(target)) return false;
+
+        String found = to64Hex(candidate);
+        if (foundHex.compareAndSet(null, found)) {
             running.set(false);
         }
+        return true;
     }
 
-    private BigInteger claimChunk(int workerId) {
-        synchronized (chunkLock) {
-            if (!running.get()) return null;
+    private BigInteger initialWildOffset(int workerId) {
+        // Small, distinct randomized offsets let several wild kangaroos search
+        // independently without moving them across the entire 2^139 interval.
+        BigInteger spacing = BigInteger.ONE.shiftLeft(64);
+        BigInteger base = spacing.multiply(BigInteger.valueOf(workerId));
 
-            BigInteger start = nextChunkStart == null ? currentKey : nextChunkStart;
-            if (start == null) start = RANGE_START;
-            if (start.compareTo(RANGE_END) > 0) return null;
+        byte[] salt = new byte[16];
+        secureRandom.nextBytes(salt);
+        BigInteger jitter = new BigInteger(1, salt)
+                .xor(BigInteger.valueOf(runNonce))
+                .mod(spacing);
 
-            BigInteger next = start.add(BigInteger.valueOf(CHUNK_SIZE));
-            nextChunkStart = next;
-            workerPositions.set(workerId, start);
-            return start;
+        return base.add(jitter);
+    }
+
+    private BigInteger[] buildJumpScalars() throws Exception {
+        BigInteger[] jumps = new BigInteger[JUMP_COUNT];
+        BigInteger floor = BigInteger.ONE.shiftLeft(66);
+        BigInteger span = BigInteger.ONE.shiftLeft(69)
+                .subtract(floor);
+
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+
+        for (int i = 0; i < JUMP_COUNT; i++) {
+            byte[] seed =
+                    ("btc-puzzle-140-jump-" + i)
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            BigInteger r =
+                    new BigInteger(1, digest.digest(seed)).mod(span);
+            jumps[i] = floor.add(r);
         }
+
+        return jumps;
     }
 
-    private BigInteger computeSafeResumeKey() {
-        BigInteger min = nextChunkStart;
-        if (min == null) min = currentKey;
-        if (min == null) min = RANGE_START;
+    private int jumpIndex(BigInteger affineX) {
+        return affineX.intValue() & (JUMP_COUNT - 1);
+    }
 
-        AtomicReferenceArray<BigInteger> positions = workerPositions;
-        for (int i = 0; i < positions.length(); i++) {
-            BigInteger p = positions.get(i);
-            if (p != null && p.compareTo(min) < 0) {
-                min = p;
-            }
+    private boolean isDistinguished(BigInteger affineX) {
+        return affineX.and(DP_MASK).signum() == 0;
+    }
+
+    private String pointKey(ECPoint point) {
+        return bytesToHex(point.getEncoded(true));
+    }
+
+    private void countJump() {
+        sessionCounter.incrementAndGet();
+        totalCounter.incrementAndGet();
+    }
+
+    private void setWorkerError(String worker, Throwable t) {
+        if (lastError == null || lastError.isEmpty()) {
+            lastError =
+                    worker + ": " +
+                    t.getClass().getSimpleName() + ": " +
+                    String.valueOf(t.getMessage());
         }
-
-        if (min.compareTo(RANGE_START) < 0) return RANGE_START;
-        if (min.compareTo(RANGE_END) > 0) return RANGE_END;
-        return min;
+        running.set(false);
     }
 
-    private synchronized void saveCheckpoint() {
-        BigInteger safe = foundHex.get() != null
-                ? new BigInteger(foundHex.get(), 16)
-                : computeSafeResumeKey();
-
+    private synchronized void saveCounters() {
         prefs.edit()
-                .putString(PREF_CURRENT, to64Hex(safe))
                 .putLong(PREF_TOTAL, totalCounter.get())
                 .apply();
     }
 
+    public static double expectedWorkJumps() {
+        return Math.pow(2.0, 69.5);
+    }
+
+    // Legacy bridge method. For Kangaroo this is "work performed compared with
+    // the square-root work estimate", not literal keyspace coverage.
     public static double fractionOfFullRange(long checked) {
         if (checked <= 0) return 0.0;
-        return new BigInteger(Long.toString(checked)).doubleValue() / RANGE_SIZE.doubleValue();
+        return Math.min(1.0, checked / expectedWorkJumps());
     }
 
     private static byte[] hash160(byte[] input) throws Exception {
@@ -448,7 +549,7 @@ public final class Puzzle101Solver {
     }
 
     private static String to64Hex(BigInteger value) {
-        String h = value == null ? RANGE_START_HEX : value.toString(16).toLowerCase(Locale.US);
+        String h = value.toString(16).toLowerCase(Locale.US);
         StringBuilder out = new StringBuilder(64);
         for (int i = h.length(); i < 64; i++) out.append('0');
         out.append(h);
@@ -458,9 +559,25 @@ public final class Puzzle101Solver {
     private static byte[] hexToBytes(String hex) {
         int len = hex.length();
         byte[] out = new byte[len / 2];
+
         for (int i = 0; i < len; i += 2) {
-            out[i / 2] = (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
+            out[i / 2] =
+                    (byte) Integer.parseInt(hex.substring(i, i + 2), 16);
         }
+
         return out;
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        final char[] chars = "0123456789abcdef".toCharArray();
+        char[] out = new char[bytes.length * 2];
+
+        for (int i = 0; i < bytes.length; i++) {
+            int v = bytes[i] & 0xff;
+            out[i * 2] = chars[v >>> 4];
+            out[i * 2 + 1] = chars[v & 0x0f];
+        }
+
+        return new String(out);
     }
 }
