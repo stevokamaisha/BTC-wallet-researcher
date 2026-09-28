@@ -63,10 +63,12 @@ public class MainActivity extends Activity {
                 StringBuilder injected = new StringBuilder();
 
                 if (v4 != null && !v4.isEmpty()) {
-                    injected.append(v4).append('\n');
+                    injected.append(v4).append('
+');
                 }
                 if (walletFix != null && !walletFix.isEmpty()) {
-                    injected.append(walletFix).append('\n');
+                    injected.append(walletFix).append('
+');
                 }
 
                 if (injected.length() > 0) {
@@ -317,7 +319,9 @@ public class MainActivity extends Activity {
         try {
             json.put("targetAddress", Puzzle101Solver.TARGET_ADDRESS);
             json.put("rangeStart", Puzzle101Solver.RANGE_START_HEX);
-            json.put("rangeEnd", Puzzle101Solver.RANGE_END_HEX);\n            json.put("publicKey", Puzzle101Solver.PUBLIC_KEY_HEX);\n            json.put("expectedWorkJumps", Puzzle101Solver.expectedWorkJumps());
+            json.put("rangeEnd", Puzzle101Solver.RANGE_END_HEX);
+            json.put("publicKey", Puzzle101Solver.PUBLIC_KEY_HEX);
+            json.put("expectedWorkJumps", Puzzle101Solver.expectedWorkJumps());
 
             if (state != null) {
                 json.put("running", state.running);
@@ -325,7 +329,9 @@ public class MainActivity extends Activity {
                 json.put("sessionChecked", state.sessionChecked);
                 json.put("totalChecked", state.totalChecked);
                 json.put("keysPerSecond", state.keysPerSecond);
-                json.put("workerCount", state.workerCount);\n                json.put("distinguishedPoints", state.distinguishedPoints);\n                json.put("algorithm", state.algorithm);
+                json.put("workerCount", state.workerCount);
+                json.put("distinguishedPoints", state.distinguishedPoints);
+                json.put("algorithm", state.algorithm);
                 json.put("fractionChecked", Puzzle101Solver.fractionOfFullRange(state.totalChecked));
                 if (state.error != null && !state.error.isEmpty()) {
                     json.put("error", state.error);
@@ -376,7 +382,8 @@ public class MainActivity extends Activity {
 
             String line;
             while ((line = reader.readLine()) != null) {
-                out.append(line).append('\n');
+                out.append(line).append('
+');
             }
 
         } catch (Exception e) {
