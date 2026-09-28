@@ -1,5 +1,4 @@
 import express from 'express';
-import { load } from 'cheerio';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -181,7 +180,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'crypto-claim-research-backend',
-    version: '10.1',
+    version: '10.2',
     model: OPENAI_MODEL,
     openaiConfigured: Boolean(OPENAI_API_KEY),
     accessTokenConfigured: Boolean(APP_ACCESS_TOKEN)
@@ -285,7 +284,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
       signal: controller.signal,
       headers: {
         'Accept': options.accept || 'application/json,text/plain,*/*',
-        'User-Agent': 'CryptoClaimWalletResearcher/10.0 (+public blockchain research)',
+        'User-Agent': 'CryptoClaimWalletResearcher/10.2 (+public blockchain research)',
         ...(options.headers || {})
       }
     });
@@ -509,175 +508,144 @@ async function addLatestActivity(candidate) {
 }
 
 
-function parseRichDate(value) {
-  const text = String(value || '').trim();
-  if (!text || text === '—' || text === '-' || text.toLowerCase() === 'unknown') return null;
-  const date = new Date(text + 'T00:00:00Z');
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-async function getHighBalanceCandidates() {
-  const cacheKey = 'openbitcoin:rich-list';
+async function getBlockMeta(height) {
+  const cacheKey = 'blockmeta:' + height;
   const cached = cacheGet(cacheKey);
   if (cached) return cached;
 
-  const { text } = await fetchWithTimeout(
-    'https://openbitcoin.com/rich-list',
-    {
-      accept: 'text/html',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Safari/537.36'
-      }
-    },
-    16000
-  );
-
-  const $ = load(text);
-  const rows = [];
-
-  $('tr').each((_, tr) => {
-    const cells = $(tr).find('td');
-    if (cells.length < 3) return;
-
-    const rank = Number.parseInt($(cells[0]).text().replace(/[^0-9]/g, ''), 10);
-    const addressCell = $(cells[1]).text().trim();
-    const addressMatch = addressCell.match(/(bc1[0-9a-z]{20,90}|[13][a-km-zA-HJ-NP-Z1-9]{25,62})/i);
-    if (!addressMatch) return;
-
-    const balanceText = $(cells[2]).text().replace(/,/g, '');
-    const balanceMatch = balanceText.match(/([0-9]+(?:\.[0-9]+)?)\s*BTC/i);
-    const balance = balanceMatch ? Number(balanceMatch[1]) : NaN;
-    if (!Number.isFinite(balance)) return;
-
-    const firstSeen = cells.length > 6 ? parseRichDate($(cells[6]).text()) : null;
-    const lastActivity = cells.length > 7 ? parseRichDate($(cells[7]).text()) : null;
-
-    rows.push({
-      address: addressMatch[1],
-      rank: Number.isFinite(rank) ? rank : null,
-      balance,
-      firstSeen: firstSeen ? firstSeen.toISOString() : null,
-      sourceLastActivity: lastActivity ? lastActivity.toISOString() : null,
-      sourceDormantYears: lastActivity ? yearsAgo(lastActivity) : null,
-      source: 'OpenBitcoin rich list'
-    });
-  });
-
-  if (rows.length < 20) {
-    throw new Error('High-balance index returned too few rows.');
+  const hashResult = await esploraText('/block-height/' + height, 10000);
+  const hash = String(hashResult.text || '').trim();
+  if (!/^[0-9a-f]{64}$/i.test(hash)) {
+    throw new Error('Invalid block hash at height ' + height);
   }
 
-  return cachePut(cacheKey, rows);
+  const blockResult = await esploraJson('/block/' + hash, 10000);
+  const block = blockResult.data || {};
+  const timestamp = Number(block.timestamp || 0);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    throw new Error('Invalid block timestamp at height ' + height);
+  }
+
+  return cachePut(cacheKey, {
+    height: Number(block.height || height),
+    hash,
+    timestamp,
+    provider: blockResult.provider.name
+  });
 }
 
-async function discoverHighBalance({ years, minBalance, limit }) {
-  const rows = await getHighBalanceCandidates();
+async function findHeightAtOrBeforeTimestamp(targetTimestamp, tipHeight) {
+  let low = 0;
+  let high = tipHeight;
+  let best = 0;
 
-  const eligibleByBalance = rows
-    .filter((x) => Number.isFinite(x.balance) && x.balance >= minBalance)
-    .sort((a, b) => b.balance - a.balance);
+  for (let i = 0; i < 22 && low <= high; i++) {
+    const mid = Math.floor((low + high) / 2);
+    const meta = await getBlockMeta(mid);
 
-  const likelyDormant = eligibleByBalance.filter((x) =>
-    x.sourceDormantYears == null || x.sourceDormantYears >= years
-  );
-
-  const verificationPool = [];
-  const seen = new Set();
-
-  for (const row of likelyDormant) {
-    if (seen.has(row.address)) continue;
-    seen.add(row.address);
-    verificationPool.push(row);
-    if (verificationPool.length >= Math.max(limit * 5, 25)) break;
-  }
-
-  for (const row of eligibleByBalance) {
-    if (seen.has(row.address)) continue;
-    seen.add(row.address);
-    verificationPool.push(row);
-    if (verificationPool.length >= Math.max(limit * 7, 35)) break;
-  }
-
-  const verifiedRaw = await mapLimit(
-    verificationPool,
-    4,
-    async (row) => {
-      const balanceRow = await addressBalanceSnapshot(row);
-      const activityRow = await addLatestActivity(balanceRow);
-      return {
-        ...activityRow,
-        rank: row.rank,
-        source: row.source,
-        sourceLastActivity: row.sourceLastActivity,
-        sourceDormantYears: row.sourceDormantYears
-      };
+    if (meta.timestamp <= targetTimestamp) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
     }
-  );
+  }
 
-  const verified = verifiedRaw.filter((x) => x && !x.__error);
-  const errors = verifiedRaw.filter((x) => x && x.__error).map((x) => x.__error);
+  return Math.max(1, best);
+}
 
-  const exact = verified
-    .filter((x) =>
-      Number.isFinite(x.balance) &&
-      x.balance >= minBalance &&
-      x.dormantYears != null &&
-      x.dormantYears >= years
-    )
-    .sort((a, b) => b.balance - a.balance)
-    .slice(0, limit);
+function deterministicUnit(seed) {
+  let x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
 
-  const exactSet = new Set(exact.map((x) => x.address));
+function sampleHistoricalHeights(cutoffHeight, count, cursor) {
+  const lower = Math.max(1, Math.floor(cutoffHeight * 0.03));
+  const span = Math.max(1, cutoffHeight - lower);
+  const bucket = span / count;
+  const heights = [];
 
-  const nearMatches = verified
-    .filter((x) =>
-      !exactSet.has(x.address) &&
-      Number.isFinite(x.balance) &&
-      x.balance >= minBalance
-    )
-    .sort((a, b) => b.balance - a.balance)
-    .slice(0, Math.min(limit, 5));
+  for (let i = 0; i < count; i++) {
+    const jitter = deterministicUnit((cursor + 1) * 1009 + i * 9176);
+    const h = Math.floor(lower + bucket * (i + 0.15 + 0.7 * jitter));
+    heights.push(Math.max(1, Math.min(cutoffHeight, h)));
+  }
 
-  return {
-    ok: true,
-    source: 'High-balance Bitcoin index + Blockstream/mempool verification',
-    tipHeight: null,
-    targetHeight: null,
-    blocksRequested: 0,
-    blocksRead: 0,
-    checked: verified.length,
-    fundedChecked: verified.filter((x) => x.balance >= minBalance).length,
-    activityChecked: verified.length,
-    cursor: 0,
-    nextCursor: 1,
-    results: exact,
-    nearMatches,
-    providerErrors: errors.slice(0, 8),
-    message: exact.length
-      ? 'High-balance discovery found verified addresses matching the dormancy filter.'
-      : 'High-balance discovery completed. No exact dormancy match in the verified set; large funded near matches are shown.'
-  };
+  return [...new Set(heights)].sort((a, b) => a - b);
+}
+
+function directScanConfig(depth) {
+  if (depth >= 500) {
+    return { blockCount: 72, txPages: 2, candidateBudget: 240, balanceConcurrency: 8 };
+  }
+  if (depth >= 300) {
+    return { blockCount: 48, txPages: 2, candidateBudget: 180, balanceConcurrency: 7 };
+  }
+  return { blockCount: 30, txPages: 1, candidateBudget: 120, balanceConcurrency: 6 };
+}
+
+function collectLargeOutputCandidates(blocks, minBalance, budget) {
+  const map = new Map();
+  const minHistoricalSats = Math.max(1, Math.floor(minBalance * 1e8 * 0.5));
+
+  for (const block of blocks) {
+    if (!block || block.__error || !Array.isArray(block.transactions)) continue;
+
+    for (let txIndex = 0; txIndex < block.transactions.length; txIndex++) {
+      const tx = block.transactions[txIndex];
+      const outputs = tx && Array.isArray(tx.vout) ? tx.vout : [];
+
+      for (const out of outputs) {
+        const address = out && out.scriptpubkey_address;
+        const value = Number(out && out.value);
+        if (!address || !Number.isFinite(value) || value < minHistoricalSats) continue;
+        if (!/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{20,90}$/i.test(address)) continue;
+
+        const current = map.get(address) || {
+          address,
+          historicalOutputSats: 0,
+          sampledHeights: [],
+          coinbaseSeen: false
+        };
+
+        current.historicalOutputSats += value;
+        if (!current.sampledHeights.includes(block.height)) current.sampledHeights.push(block.height);
+        if (txIndex === 0) current.coinbaseSeen = true;
+        map.set(address, current);
+      }
+    }
+  }
+
+  return [...map.values()]
+    .sort((a, b) => {
+      if (a.coinbaseSeen !== b.coinbaseSeen) return a.coinbaseSeen ? -1 : 1;
+      return b.historicalOutputSats - a.historicalOutputSats;
+    })
+    .slice(0, budget);
 }
 
 async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor }) {
-  const config = discoveryConfig(depth);
+  const config = directScanConfig(depth);
   const tip = await getTipHeight();
 
-  const blocksPerYear = 365.2425 * 144;
-  const ageBlocks = Math.max(1, Math.floor(years * blocksPerYear));
-  const pageStride = 1008; // about one week
-  const cursorOffset = cursor * config.blocks * pageStride;
-  const baseHeight = Math.max(1, tip.height - ageBlocks - cursorOffset);
+  const cutoffTimestamp = Math.floor(
+    Date.now() / 1000 - years * 365.2425 * 86400
+  );
 
-  const heights = [];
-  for (let i = 0; i < config.blocks; i++) {
-    const h = Math.max(1, baseHeight - i * pageStride);
-    heights.push(h);
-  }
+  const cutoffHeight = await findHeightAtOrBeforeTimestamp(
+    cutoffTimestamp,
+    tip.height
+  );
+
+  const heights = sampleHistoricalHeights(
+    cutoffHeight,
+    config.blockCount,
+    cursor
+  );
 
   const blockResults = await mapLimit(
     heights,
-    3,
+    5,
     (height) => getHistoricalBlockTransactions(height, config.txPages)
   );
 
@@ -690,30 +658,39 @@ async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor
     throw new Error('Could not read any historical Bitcoin blocks. ' + blockErrors.join(' | '));
   }
 
-  const candidates = collectOutputCandidates(goodBlocks, config.candidateBudget);
+  const candidates = collectLargeOutputCandidates(
+    goodBlocks,
+    minBalance,
+    config.candidateBudget
+  );
+
   if (!candidates.length) {
     return {
       ok: true,
-      source: 'Bitcoin blockchain via Esplora',
+      source: 'Bitcoin blockchain via Blockstream/mempool Esplora',
       tipHeight: tip.height,
+      cutoffHeight,
+      cutoffTimestamp,
       blocksRequested: heights.length,
       blocksRead: goodBlocks.length,
       checked: 0,
       fundedChecked: 0,
+      activityChecked: 0,
       cursor,
       nextCursor: cursor + 1,
       results: [],
       nearMatches: [],
       providerErrors: blockErrors,
-      message: 'Historical blocks were read successfully, but no standard Bitcoin address outputs were found in this slice.'
+      message: 'Historical blocks were read successfully, but this slice contained no sufficiently large standard-address outputs.'
     };
   }
 
   const snapshotsRaw = await mapLimit(
     candidates,
-    config.concurrency,
+    config.balanceConcurrency,
     addressBalanceSnapshot
   );
+
   const snapshots = snapshotsRaw.filter((x) => x && !x.__error);
   const snapshotErrors = snapshotsRaw
     .filter((x) => x && x.__error)
@@ -725,35 +702,52 @@ async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor
 
   const activityBudget = Math.min(
     funded.length,
-    Math.max(limit * 6, depth >= 500 ? 40 : depth >= 300 ? 30 : 20)
+    Math.max(limit * 8, depth >= 500 ? 70 : depth >= 300 ? 50 : 30)
   );
 
   const detailedRaw = await mapLimit(
     funded.slice(0, activityBudget),
-    Math.min(config.concurrency, 4),
+    5,
     addLatestActivity
   );
+
   const detailed = detailedRaw.filter((x) => x && !x.__error);
   const activityErrors = detailedRaw
     .filter((x) => x && x.__error)
     .map((x) => x.__error);
 
   const exact = detailed
-    .filter((x) => x.dormantYears != null && x.dormantYears >= years)
-    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance)
+    .filter((x) =>
+      x.dormantYears != null &&
+      x.dormantYears >= years &&
+      Number.isFinite(x.balance) &&
+      x.balance >= minBalance
+    )
+    .sort((a, b) => b.balance - a.balance)
     .slice(0, limit);
 
   const exactAddresses = new Set(exact.map((x) => x.address));
+
   const nearMatches = detailed
-    .filter((x) => !exactAddresses.has(x.address) && x.dormantYears != null)
-    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance)
+    .filter((x) =>
+      !exactAddresses.has(x.address) &&
+      Number.isFinite(x.balance) &&
+      x.balance >= minBalance
+    )
+    .sort((a, b) => {
+      const dormancyA = Number(a.dormantYears || 0);
+      const dormancyB = Number(b.dormantYears || 0);
+      if (dormancyB !== dormancyA) return dormancyB - dormancyA;
+      return b.balance - a.balance;
+    })
     .slice(0, Math.min(limit, 5));
 
   return {
     ok: true,
     source: 'Bitcoin blockchain via Blockstream/mempool Esplora',
     tipHeight: tip.height,
-    targetHeight: baseHeight,
+    cutoffHeight,
+    cutoffTimestamp,
     blocksRequested: heights.length,
     blocksRead: goodBlocks.length,
     checked: snapshots.length,
@@ -765,22 +759,20 @@ async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor
     nearMatches,
     providerErrors: [...blockErrors, ...snapshotErrors, ...activityErrors].slice(0, 12),
     message: exact.length
-      ? 'Search completed with matching dormant funded addresses.'
-      : 'Search completed. No exact match in this blockchain slice; near matches are included when available.'
+      ? 'Search completed with funded addresses matching the dormancy threshold.'
+      : 'Search completed. No exact match in this slice; funded near matches are included when available.'
   };
 }
 
 app.get('/api/wallets/health', async (req, res) => {
   const checks = {
     backend: { ok: true, detail: 'Render backend online' },
-    highBalanceIndex: { ok: false, detail: '' },
     blockstream: { ok: false, detail: '' },
     mempool: { ok: false, detail: '' }
   };
 
-  const [richResult, ...providerResults] = await Promise.allSettled([
-    getHighBalanceCandidates(),
-    ...ESPLORA_PROVIDERS.map(async (provider) => {
+  const tests = await Promise.allSettled(
+    ESPLORA_PROVIDERS.map(async (provider) => {
       const { text } = await fetchWithTimeout(
         provider.base + '/blocks/tip/height',
         { accept: 'text/plain' },
@@ -790,21 +782,9 @@ app.get('/api/wallets/health', async (req, res) => {
       if (!Number.isFinite(height)) throw new Error('Invalid block height');
       return { name: provider.name, height: Math.floor(height) };
     })
-  ]);
+  );
 
-  if (richResult.status === 'fulfilled') {
-    checks.highBalanceIndex = {
-      ok: true,
-      detail: richResult.value.length + ' high-balance addresses available'
-    };
-  } else {
-    checks.highBalanceIndex = {
-      ok: false,
-      detail: richResult.reason.message || String(richResult.reason)
-    };
-  }
-
-  providerResults.forEach((result, i) => {
+  tests.forEach((result, i) => {
     const key = i === 0 ? 'blockstream' : 'mempool';
     if (result.status === 'fulfilled') {
       checks[key] = { ok: true, detail: 'height ' + result.value.height };
@@ -815,9 +795,9 @@ app.get('/api/wallets/health', async (req, res) => {
 
   res.json({
     ok: true,
-    version: '10.1',
+    version: '10.2',
     checks,
-    usable: checks.highBalanceIndex.ok || checks.blockstream.ok || checks.mempool.ok
+    usable: checks.blockstream.ok || checks.mempool.ok
   });
 });
 
@@ -828,27 +808,14 @@ app.get('/api/wallets/discover', async (req, res) => {
   const depth = [200, 300, 500].includes(Number(req.query.depth)) ? Number(req.query.depth) : 200;
   const cursor = Math.max(0, Math.floor(Number(req.query.cursor || 0)));
 
-  const errors = [];
-
-  if (cursor === 0) {
-    try {
-      const data = await discoverHighBalance({ years, minBalance, limit });
-      return res.json(data);
-    } catch (e) {
-      errors.push('High-balance index: ' + (e.message || String(e)));
-    }
-  }
-
   try {
     const data = await discoverFromPublicChain({ years, minBalance, limit, depth, cursor });
-    data.providerErrors = [...errors, ...(data.providerErrors || [])];
-    return res.json(data);
+    res.json(data);
   } catch (e) {
-    errors.push('Direct-chain fallback: ' + (e.message || String(e)));
-    console.error('wallet discovery error:', errors.join(' | '));
-    return res.status(502).json({
+    console.error('wallet discovery error:', e.message);
+    res.status(502).json({
       error: 'Bitcoin discovery providers are temporarily unavailable.',
-      detail: errors.join(' | ')
+      detail: e.message || String(e)
     });
   }
 });
@@ -1002,7 +969,4 @@ app.use((req, res) => res.status(404).json({ error: 'Not found.' }));
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Crypto Claim Research backend listening on port ${PORT}`);
   console.log(`Model: ${OPENAI_MODEL}`);
-  getHighBalanceCandidates()
-    .then((rows) => console.log(`High-balance source ready: ${rows.length} addresses`))
-    .catch((e) => console.error('High-balance source unavailable:', e.message));
 });
