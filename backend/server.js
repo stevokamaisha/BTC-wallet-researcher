@@ -1002,4 +1002,7 @@ app.use((req, res) => res.status(404).json({ error: 'Not found.' }));
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Crypto Claim Research backend listening on port ${PORT}`);
   console.log(`Model: ${OPENAI_MODEL}`);
+  getHighBalanceCandidates()
+    .then((rows) => console.log(`High-balance source ready: ${rows.length} addresses`))
+    .catch((e) => console.error('High-balance source unavailable:', e.message));
 });
