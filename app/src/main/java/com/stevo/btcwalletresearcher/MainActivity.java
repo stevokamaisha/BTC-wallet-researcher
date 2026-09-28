@@ -27,6 +27,7 @@ import java.util.Set;
 
 public class MainActivity extends Activity {
     private WebView webView;
+    private Puzzle101Solver puzzle101Solver;
 
     private static final Set<String> ALLOWED_HOSTS = new HashSet<>(Arrays.asList(
             "mempool.space",
@@ -39,6 +40,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         webView = new WebView(this);
+        puzzle101Solver = new Puzzle101Solver(getApplicationContext());
         setContentView(webView);
 
         WebSettings settings = webView.getSettings();
@@ -47,7 +49,7 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/10.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " CryptoClaimWalletResearcher/11.0");
 
         webView.addJavascriptInterface(new NativeBridge(), "Android");
         webView.setWebChromeClient(new WebChromeClient());
@@ -120,6 +122,36 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
         }
+
+        @JavascriptInterface
+        public void puzzle101Start() {
+            if (puzzle101Solver == null) return;
+            puzzle101Solver.start(createPuzzle101Listener());
+        }
+
+        @JavascriptInterface
+        public void puzzle101Stop() {
+            if (puzzle101Solver == null) return;
+            puzzle101Solver.stop(createPuzzle101Listener());
+        }
+
+        @JavascriptInterface
+        public void puzzle101NewShard() {
+            if (puzzle101Solver == null) return;
+            Puzzle101Solver.State state = puzzle101Solver.newRandomShard();
+            sendPuzzle101State(state, null, null);
+        }
+
+        @JavascriptInterface
+        public String puzzle101State() {
+            if (puzzle101Solver == null) return "{}";
+            return puzzle101StateJson(puzzle101Solver.snapshot(), null, null).toString();
+        }
+
+        @JavascriptInterface
+        public boolean puzzle101SelfTest() {
+            return puzzle101Solver != null && puzzle101Solver.selfTest();
+        }
     }
 
     private void performPublicGet(String urlString, String requestId) {
@@ -147,7 +179,7 @@ public class MainActivity extends Activity {
             connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
             connection.setRequestProperty("Accept-Encoding", "identity");
             connection.setRequestProperty("Connection", "close");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/10.0");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/11.0");
 
             int status = connection.getResponseCode();
             InputStream input = status >= 200 && status < 400
@@ -196,7 +228,7 @@ public class MainActivity extends Activity {
             connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/10.0");
+            connection.setRequestProperty("User-Agent", "CryptoClaimWalletResearcher/11.0");
 
             if (accessToken != null && !accessToken.trim().isEmpty()) {
                 connection.setRequestProperty("X-App-Token", accessToken.trim());
@@ -253,6 +285,63 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
+    private Puzzle101Solver.Listener createPuzzle101Listener() {
+        return new Puzzle101Solver.Listener() {
+            @Override
+            public void onState(Puzzle101Solver.State state) {
+                sendPuzzle101State(state, null, null);
+            }
+
+            @Override
+            public void onFound(Puzzle101Solver.State state, String privateKeyHex) {
+                sendPuzzle101State(state, privateKeyHex, null);
+            }
+
+            @Override
+            public void onError(String message) {
+                Puzzle101Solver.State state = puzzle101Solver == null ? null : puzzle101Solver.snapshot();
+                sendPuzzle101State(state, null, message);
+            }
+        };
+    }
+
+    private JSONObject puzzle101StateJson(Puzzle101Solver.State state, String foundHex, String error) {
+        JSONObject json = new JSONObject();
+        try {
+            json.put("targetAddress", Puzzle101Solver.TARGET_ADDRESS);
+            json.put("rangeStart", Puzzle101Solver.RANGE_START_HEX);
+            json.put("rangeEnd", Puzzle101Solver.RANGE_END_HEX);
+
+            if (state != null) {
+                json.put("running", state.running);
+                json.put("currentHex", state.currentHex);
+                json.put("sessionChecked", state.sessionChecked);
+                json.put("totalChecked", state.totalChecked);
+                json.put("keysPerSecond", state.keysPerSecond);
+                json.put("fractionChecked", Puzzle101Solver.fractionOfFullRange(state.totalChecked));
+            }
+
+            if (foundHex != null && !foundHex.isEmpty()) {
+                json.put("found", true);
+                json.put("privateKeyHex", foundHex);
+            }
+
+            if (error != null && !error.isEmpty()) {
+                json.put("error", error);
+            }
+        } catch (Exception ignored) {
+        }
+        return json;
+    }
+
+    private void sendPuzzle101State(Puzzle101Solver.State state, String foundHex, String error) {
+        final String payload = puzzle101StateJson(state, foundHex, error).toString();
+        final String js = "window.Puzzle101Native && window.Puzzle101Native._update(" + payload + ");";
+        runOnUiThread(() -> {
+            if (webView != null) webView.evaluateJavascript(js, null);
+        });
+    }
+
     private String readText(InputStream input) throws Exception {
         if (input == null) return "";
 
@@ -284,6 +373,14 @@ public class MainActivity extends Activity {
         }
 
         return out.toString();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (puzzle101Solver != null) {
+            puzzle101Solver.stop(null);
+        }
+        super.onDestroy();
     }
 
     @Override
