@@ -1,5 +1,4 @@
 import express from 'express';
-import { load } from 'cheerio';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -260,8 +259,21 @@ app.post('/api/search/:id/cancel', requireAppToken, async (req, res) => {
 });
 
 
-const WALLET_PAGE_CACHE_MS = 10 * 60 * 1000;
-const walletPageCache = new Map();
+const ESPLORA_PROVIDERS = [
+  {
+    name: 'Blockstream',
+    base: 'https://blockstream.info/api',
+    explorer: 'https://blockstream.info/address/'
+  },
+  {
+    name: 'mempool.space',
+    base: 'https://mempool.space/api',
+    explorer: 'https://mempool.space/address/'
+  }
+];
+
+const chainCache = new Map();
+const CHAIN_CACHE_MS = 10 * 60 * 1000;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   const controller = new AbortController();
@@ -271,8 +283,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
       ...options,
       signal: controller.signal,
       headers: {
-        'Accept': options.accept || 'text/html,application/json,text/plain,*/*',
-        'User-Agent': 'CryptoClaimWalletResearcher/7.0 (+public blockchain research)',
+        'Accept': options.accept || 'application/json,text/plain,*/*',
+        'User-Agent': 'CryptoClaimWalletResearcher/10.0 (+public blockchain research)',
         ...(options.headers || {})
       }
     });
@@ -289,147 +301,70 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   }
 }
 
-function parseUtcDate(value) {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-  const normalized = raw.replace(/\s+UTC$/i, ' UTC');
-  const date = new Date(normalized);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
 function yearsAgo(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
   return (Date.now() - date.getTime()) / (365.2425 * 86400000);
 }
 
-function newerDate(a, b) {
-  if (!a) return b || null;
-  if (!b) return a || null;
-  return a > b ? a : b;
+function cacheGet(key) {
+  const hit = chainCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.time > CHAIN_CACHE_MS) {
+    chainCache.delete(key);
+    return null;
+  }
+  return hit.value;
 }
 
-function bitInfoUrl(page) {
-  return page <= 1
-    ? 'https://bitinfocharts.com/top-100-richest-bitcoin-addresses.html'
-    : 'https://bitinfocharts.com/top-100-richest-bitcoin-addresses-' + page + '.html';
+function cachePut(key, value) {
+  chainCache.set(key, { time: Date.now(), value });
+  return value;
 }
 
-function parseBitInfoRows(html, page) {
-  const $ = load(html);
-  const rows = [];
+async function esploraText(path, timeoutMs = 12000) {
+  const cacheKey = 'text:' + path;
+  const cached = cacheGet(cacheKey);
+  if (cached != null) return cached;
 
-  $('tr').each((_, tr) => {
-    const cells = $(tr).find('td');
-    if (cells.length < 6) return;
-
-    const rank = Number.parseInt($(cells[0]).text().trim(), 10);
-    if (!Number.isFinite(rank)) return;
-
-    const addressLink = $(cells[1]).find('a[href*="/bitcoin/address/"]').first();
-    const address = addressLink.text().trim();
-    if (!address || !/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{20,}$/i.test(address)) return;
-
-    const balanceText = $(cells[2]).text().replace(/,/g, '');
-    const balanceMatch = balanceText.match(/([0-9]+(?:\.[0-9]+)?)\s*BTC/i);
-    const balance = balanceMatch ? Number(balanceMatch[1]) : NaN;
-    if (!Number.isFinite(balance)) return;
-
-    const firstIn = parseUtcDate($(cells[4]).text());
-    const lastIn = parseUtcDate($(cells[5]).text());
-    const firstOut = cells.length > 7 ? parseUtcDate($(cells[7]).text()) : null;
-    const lastOut = cells.length > 8 ? parseUtcDate($(cells[8]).text()) : null;
-    const lastActivity = newerDate(lastIn, lastOut);
-
-    rows.push({
-      address,
-      balance,
-      rank,
-      firstIn: firstIn ? firstIn.toISOString() : null,
-      firstOut: firstOut ? firstOut.toISOString() : null,
-      lastActivity: lastActivity ? lastActivity.toISOString() : null,
-      dormantYears: lastActivity ? yearsAgo(lastActivity) : null,
-      txCount: null,
-      source: 'BitInfoCharts',
-      sourcePage: page,
-      verified: false
-    });
-  });
-
-  return rows;
-}
-
-async function getBitInfoPage(page) {
-  const key = 'bitinfo:' + page;
-  const cached = walletPageCache.get(key);
-  if (cached && Date.now() - cached.time < WALLET_PAGE_CACHE_MS) return cached.rows;
-
-  const { text } = await fetchWithTimeout(bitInfoUrl(page), {}, 16000);
-  const rows = parseBitInfoRows(text, page);
-  if (rows.length < 20) throw new Error('BitInfoCharts page ' + page + ' returned too few address rows.');
-
-  walletPageCache.set(key, { time: Date.now(), rows });
-  return rows;
-}
-
-async function verifyEsploraAddress(row) {
-  const address = encodeURIComponent(row.address);
-  const providers = [
-    { name: 'Blockstream', base: 'https://blockstream.info/api', explorer: 'https://blockstream.info/address/' },
-    { name: 'mempool.space', base: 'https://mempool.space/api', explorer: 'https://mempool.space/address/' }
-  ];
-
-  for (const provider of providers) {
+  const errors = [];
+  for (const provider of ESPLORA_PROVIDERS) {
     try {
-      const [infoResult, txResult] = await Promise.all([
-        fetchWithTimeout(provider.base + '/address/' + address, { accept: 'application/json' }, 12000),
-        fetchWithTimeout(provider.base + '/address/' + address + '/txs', { accept: 'application/json' }, 12000)
-      ]);
-
-      const info = JSON.parse(infoResult.text);
-      const txs = JSON.parse(txResult.text);
-      const chain = info.chain_stats || {};
-      const mempool = info.mempool_stats || {};
-      const balance = (
-        Number(chain.funded_txo_sum || 0) -
-        Number(chain.spent_txo_sum || 0) +
-        Number(mempool.funded_txo_sum || 0) -
-        Number(mempool.spent_txo_sum || 0)
-      ) / 1e8;
-
-      let lastActivity = null;
-      if (Array.isArray(txs)) {
-        for (const tx of txs) {
-          const timestamp = tx && tx.status && tx.status.confirmed
-            ? Number(tx.status.block_time || 0)
-            : 0;
-          if (timestamp) {
-            lastActivity = new Date(timestamp * 1000);
-            break;
-          }
-        }
-      }
-
-      return {
-        ...row,
-        balance,
-        txCount: Number(chain.tx_count || 0) + Number(mempool.tx_count || 0),
-        lastActivity: lastActivity ? lastActivity.toISOString() : row.lastActivity,
-        dormantYears: lastActivity ? yearsAgo(lastActivity) : row.dormantYears,
-        verified: true,
-        verificationSource: provider.name,
-        explorerUrl: provider.explorer + address
-      };
+      const { text } = await fetchWithTimeout(
+        provider.base + path,
+        { accept: 'application/json,text/plain,*/*' },
+        timeoutMs
+      );
+      const value = { text, provider };
+      cachePut(cacheKey, value);
+      return value;
     } catch (e) {
-      // Try the next independent provider.
+      errors.push(provider.name + ': ' + (e.message || String(e)));
     }
   }
+  throw new Error(errors.join(' | '));
+}
 
-  return {
-    ...row,
-    verified: false,
-    verificationSource: null,
-    explorerUrl: 'https://bitinfocharts.com/bitcoin/address/' + address
-  };
+async function esploraJson(path, timeoutMs = 12000) {
+  const cacheKey = 'json:' + path;
+  const cached = cacheGet(cacheKey);
+  if (cached != null) return cached;
+
+  const errors = [];
+  for (const provider of ESPLORA_PROVIDERS) {
+    try {
+      const { text } = await fetchWithTimeout(
+        provider.base + path,
+        { accept: 'application/json' },
+        timeoutMs
+      );
+      const value = { data: JSON.parse(text), provider };
+      cachePut(cacheKey, value);
+      return value;
+    } catch (e) {
+      errors.push(provider.name + ': ' + (e.message || String(e)));
+    }
+  }
+  throw new Error(errors.join(' | '));
 }
 
 async function mapLimit(items, limit, worker) {
@@ -443,7 +378,7 @@ async function mapLimit(items, limit, worker) {
       try {
         results[i] = await worker(items[i], i);
       } catch (e) {
-        results[i] = { ...items[i], verified: false, verificationError: e.message };
+        results[i] = { __error: e.message || String(e), input: items[i] };
       }
     }
   }
@@ -454,123 +389,275 @@ async function mapLimit(items, limit, worker) {
   return results;
 }
 
-async function blockchairFallback(minBalance, years, limit, offset) {
-  const minSats = Math.max(1, Math.floor(minBalance * 1e8));
-  const url = 'https://api.blockchair.com/bitcoin/addresses?q=balance(' + minSats + '..)&limit=100&offset=' + offset;
-  const { text } = await fetchWithTimeout(url, { accept: 'application/json' }, 16000);
-  const payload = JSON.parse(text);
-  const raw = Array.isArray(payload.data) ? payload.data : [];
-  const addresses = [];
+function discoveryConfig(depth) {
+  if (depth >= 500) {
+    return { blocks: 14, txPages: 2, candidateBudget: 160, concurrency: 6 };
+  }
+  if (depth >= 300) {
+    return { blocks: 10, txPages: 2, candidateBudget: 110, concurrency: 5 };
+  }
+  return { blocks: 6, txPages: 1, candidateBudget: 70, concurrency: 4 };
+}
 
-  for (const item of raw) {
-    const address = Array.isArray(item) ? item[0] : item && item.address;
-    const balanceSats = Number(Array.isArray(item) ? item[1] : item && item.balance);
-    if (typeof address === 'string' && Number.isFinite(balanceSats)) {
-      addresses.push({ address, balance: balanceSats / 1e8 });
+async function getTipHeight() {
+  const result = await esploraText('/blocks/tip/height', 10000);
+  const height = Number(result.text);
+  if (!Number.isFinite(height) || height < 1) throw new Error('Invalid Bitcoin tip height.');
+  return { height: Math.floor(height), provider: result.provider.name };
+}
+
+async function getHistoricalBlockTransactions(height, txPages) {
+  const hashResult = await esploraText('/block-height/' + height, 10000);
+  const hash = String(hashResult.text || '').trim();
+  if (!/^[0-9a-f]{64}$/i.test(hash)) throw new Error('Invalid block hash for height ' + height);
+
+  const pages = [];
+  for (let page = 0; page < txPages; page++) {
+    const startIndex = page * 25;
+    const result = await esploraJson('/block/' + hash + '/txs/' + startIndex, 14000);
+    const txs = Array.isArray(result.data) ? result.data : [];
+    pages.push(...txs);
+    if (txs.length < 25) break;
+  }
+
+  return {
+    height,
+    hash,
+    provider: hashResult.provider.name,
+    transactions: pages
+  };
+}
+
+function collectOutputCandidates(blocks, budget) {
+  const map = new Map();
+
+  for (const block of blocks) {
+    if (!block || block.__error || !Array.isArray(block.transactions)) continue;
+
+    for (const tx of block.transactions) {
+      const outputs = tx && Array.isArray(tx.vout) ? tx.vout : [];
+      for (const out of outputs) {
+        const address = out && out.scriptpubkey_address;
+        const value = Number(out && out.value);
+        if (!address || !Number.isFinite(value) || value <= 0) continue;
+        if (!/^(bc1|[13])[a-zA-HJ-NP-Z0-9]{20,90}$/i.test(address)) continue;
+
+        const current = map.get(address) || {
+          address,
+          historicalOutputSats: 0,
+          sampledHeights: []
+        };
+        current.historicalOutputSats += value;
+        if (!current.sampledHeights.includes(block.height)) current.sampledHeights.push(block.height);
+        map.set(address, current);
+      }
     }
   }
 
-  const candidateAddresses = addresses.slice(0, 30);
-  const verified = await mapLimit(candidateAddresses, 4, async (row) => {
-    const out = await verifyEsploraAddress({
-      ...row,
-      rank: null,
-      lastActivity: null,
-      dormantYears: null,
-      txCount: null,
-      source: 'Blockchair index',
-      verified: false
-    });
-    return out;
-  });
-
-  return verified
-    .filter((x) => x.balance >= minBalance && x.dormantYears != null && x.dormantYears >= years)
-    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance)
-    .slice(0, limit);
+  return [...map.values()]
+    .sort((a, b) => b.historicalOutputSats - a.historicalOutputSats)
+    .slice(0, budget);
 }
 
-async function discoverWalletsResilient({ years, minBalance, limit, depth, cursor }) {
-  const pageCount = depth >= 500 ? 5 : depth >= 300 ? 3 : 2;
-  const startPage = (cursor % 5) + 1;
-  const pages = [];
-  for (let i = 0; i < pageCount; i++) pages.push(((startPage - 1 + i) % 5) + 1);
+async function addressBalanceSnapshot(candidate) {
+  const encoded = encodeURIComponent(candidate.address);
+  const result = await esploraJson('/address/' + encoded, 11000);
+  const info = result.data || {};
+  const chain = info.chain_stats || {};
+  const mempool = info.mempool_stats || {};
 
-  const pageResults = await Promise.allSettled(pages.map((page) => getBitInfoPage(page)));
-  const rows = [];
-  const sourceErrors = [];
+  const funded = Number(chain.funded_txo_sum || 0);
+  const spent = Number(chain.spent_txo_sum || 0);
+  const memFunded = Number(mempool.funded_txo_sum || 0);
+  const memSpent = Number(mempool.spent_txo_sum || 0);
 
-  pageResults.forEach((result, i) => {
-    if (result.status === 'fulfilled') rows.push(...result.value);
-    else sourceErrors.push('BitInfoCharts page ' + pages[i] + ': ' + result.reason.message);
-  });
+  return {
+    ...candidate,
+    balance: (funded - spent + memFunded - memSpent) / 1e8,
+    received: funded / 1e8,
+    spent: spent / 1e8,
+    unconfirmed: (memFunded - memSpent) / 1e8,
+    txCount: Number(chain.tx_count || 0) + Number(mempool.tx_count || 0),
+    provider: result.provider.name
+  };
+}
 
-  const unique = new Map();
-  for (const row of rows) unique.set(row.address, row);
-  const candidates = [...unique.values()];
+async function addLatestActivity(candidate) {
+  const encoded = encodeURIComponent(candidate.address);
+  const result = await esploraJson('/address/' + encoded + '/txs', 12000);
+  const txs = Array.isArray(result.data) ? result.data : [];
+  let latest = null;
 
-  let matches = candidates
-    .filter((x) => x.balance >= minBalance && x.dormantYears != null && x.dormantYears >= years)
-    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance);
-
-  const verifyPool = matches.slice(0, Math.max(limit * 3, 12));
-  if (verifyPool.length) {
-    const verified = await mapLimit(verifyPool, 4, verifyEsploraAddress);
-    matches = verified
-      .filter((x) => x.balance >= minBalance && x.dormantYears != null && x.dormantYears >= years)
-      .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance);
-  }
-
-  if (!matches.length && candidates.length === 0) {
-    try {
-      matches = await blockchairFallback(minBalance, years, limit, cursor * 100);
-    } catch (e) {
-      sourceErrors.push('Blockchair fallback: ' + e.message);
+  for (const tx of txs) {
+    const timestamp = tx && tx.status && tx.status.confirmed
+      ? Number(tx.status.block_time || 0)
+      : 0;
+    if (timestamp) {
+      latest = new Date(timestamp * 1000);
+      break;
     }
   }
 
   return {
+    ...candidate,
+    lastActivity: latest ? latest.toISOString() : null,
+    dormantYears: latest ? yearsAgo(latest) : null,
+    verificationProvider: result.provider.name,
+    explorerUrl: result.provider.explorer + encoded
+  };
+}
+
+async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor }) {
+  const config = discoveryConfig(depth);
+  const tip = await getTipHeight();
+
+  const blocksPerYear = 365.2425 * 144;
+  const ageBlocks = Math.max(1, Math.floor(years * blocksPerYear));
+  const pageStride = 1008; // about one week
+  const cursorOffset = cursor * config.blocks * pageStride;
+  const baseHeight = Math.max(1, tip.height - ageBlocks - cursorOffset);
+
+  const heights = [];
+  for (let i = 0; i < config.blocks; i++) {
+    const h = Math.max(1, baseHeight - i * pageStride);
+    heights.push(h);
+  }
+
+  const blockResults = await mapLimit(
+    heights,
+    3,
+    (height) => getHistoricalBlockTransactions(height, config.txPages)
+  );
+
+  const goodBlocks = blockResults.filter((x) => x && !x.__error);
+  const blockErrors = blockResults
+    .filter((x) => x && x.__error)
+    .map((x) => x.__error);
+
+  if (!goodBlocks.length) {
+    throw new Error('Could not read any historical Bitcoin blocks. ' + blockErrors.join(' | '));
+  }
+
+  const candidates = collectOutputCandidates(goodBlocks, config.candidateBudget);
+  if (!candidates.length) {
+    return {
+      ok: true,
+      source: 'Bitcoin blockchain via Esplora',
+      tipHeight: tip.height,
+      blocksRequested: heights.length,
+      blocksRead: goodBlocks.length,
+      checked: 0,
+      fundedChecked: 0,
+      cursor,
+      nextCursor: cursor + 1,
+      results: [],
+      nearMatches: [],
+      providerErrors: blockErrors,
+      message: 'Historical blocks were read successfully, but no standard Bitcoin address outputs were found in this slice.'
+    };
+  }
+
+  const snapshotsRaw = await mapLimit(
+    candidates,
+    config.concurrency,
+    addressBalanceSnapshot
+  );
+  const snapshots = snapshotsRaw.filter((x) => x && !x.__error);
+  const snapshotErrors = snapshotsRaw
+    .filter((x) => x && x.__error)
+    .map((x) => x.__error);
+
+  const funded = snapshots
+    .filter((x) => Number.isFinite(x.balance) && x.balance >= minBalance)
+    .sort((a, b) => b.balance - a.balance);
+
+  const activityBudget = Math.min(
+    funded.length,
+    Math.max(limit * 6, depth >= 500 ? 40 : depth >= 300 ? 30 : 20)
+  );
+
+  const detailedRaw = await mapLimit(
+    funded.slice(0, activityBudget),
+    Math.min(config.concurrency, 4),
+    addLatestActivity
+  );
+  const detailed = detailedRaw.filter((x) => x && !x.__error);
+  const activityErrors = detailedRaw
+    .filter((x) => x && x.__error)
+    .map((x) => x.__error);
+
+  const exact = detailed
+    .filter((x) => x.dormantYears != null && x.dormantYears >= years)
+    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance)
+    .slice(0, limit);
+
+  const exactAddresses = new Set(exact.map((x) => x.address));
+  const nearMatches = detailed
+    .filter((x) => !exactAddresses.has(x.address) && x.dormantYears != null)
+    .sort((a, b) => (b.dormantYears || 0) - (a.dormantYears || 0) || b.balance - a.balance)
+    .slice(0, Math.min(limit, 5));
+
+  return {
     ok: true,
-    partial: sourceErrors.length > 0,
-    source: candidates.length ? 'BitInfoCharts rich list + Esplora verification' : 'Blockchair fallback + Esplora verification',
-    checked: candidates.length,
-    pages,
+    source: 'Bitcoin blockchain via Blockstream/mempool Esplora',
+    tipHeight: tip.height,
+    targetHeight: baseHeight,
+    blocksRequested: heights.length,
+    blocksRead: goodBlocks.length,
+    checked: snapshots.length,
+    fundedChecked: funded.length,
+    activityChecked: detailed.length,
     cursor,
-    nextCursor: (cursor + pageCount) % 5,
-    results: matches.slice(0, limit),
-    sourceErrors
+    nextCursor: cursor + 1,
+    results: exact,
+    nearMatches,
+    providerErrors: [...blockErrors, ...snapshotErrors, ...activityErrors].slice(0, 12),
+    message: exact.length
+      ? 'Search completed with matching dormant funded addresses.'
+      : 'Search completed. No exact match in this blockchain slice; near matches are included when available.'
   };
 }
 
 app.get('/api/wallets/health', async (req, res) => {
   const checks = {
     backend: { ok: true, detail: 'Render backend online' },
-    bitinfocharts: { ok: false, detail: '' },
-    blockstream: { ok: false, detail: '' }
+    blockstream: { ok: false, detail: '' },
+    mempool: { ok: false, detail: '' }
   };
 
-  const [bitinfo, blockstream] = await Promise.allSettled([
-    getBitInfoPage(1),
-    fetchWithTimeout('https://blockstream.info/api/blocks/tip/height', { accept: 'text/plain' }, 10000)
-  ]);
+  const tests = await Promise.allSettled(
+    ESPLORA_PROVIDERS.map(async (provider) => {
+      const { text } = await fetchWithTimeout(
+        provider.base + '/blocks/tip/height',
+        { accept: 'text/plain' },
+        10000
+      );
+      const height = Number(text);
+      if (!Number.isFinite(height)) throw new Error('Invalid block height');
+      return { name: provider.name, height: Math.floor(height) };
+    })
+  );
 
-  if (bitinfo.status === 'fulfilled') {
-    checks.bitinfocharts = { ok: true, detail: bitinfo.value.length + ' ranked addresses cached' };
-  } else {
-    checks.bitinfocharts = { ok: false, detail: bitinfo.reason.message };
-  }
-
-  if (blockstream.status === 'fulfilled') {
-    checks.blockstream = { ok: true, detail: 'height ' + blockstream.value.text.trim() };
-  } else {
-    checks.blockstream = { ok: false, detail: blockstream.reason.message };
-  }
+  tests.forEach((result, i) => {
+    const key = i === 0 ? 'blockstream' : 'mempool';
+    if (result.status === 'fulfilled') {
+      checks[key] = {
+        ok: true,
+        detail: 'height ' + result.value.height
+      };
+    } else {
+      checks[key] = {
+        ok: false,
+        detail: result.reason.message || String(result.reason)
+      };
+    }
+  });
 
   res.json({
     ok: true,
-    version: '7.0',
+    version: '10.0',
     checks,
-    usable: checks.bitinfocharts.ok || checks.blockstream.ok
+    usable: checks.blockstream.ok || checks.mempool.ok
   });
 });
 
@@ -582,21 +669,13 @@ app.get('/api/wallets/discover', async (req, res) => {
   const cursor = Math.max(0, Math.floor(Number(req.query.cursor || 0)));
 
   try {
-    const data = await discoverWalletsResilient({ years, minBalance, limit, depth, cursor });
+    const data = await discoverFromPublicChain({ years, minBalance, limit, depth, cursor });
     res.json(data);
   } catch (e) {
     console.error('wallet discovery error:', e.message);
-    res.json({
-      ok: true,
-      partial: true,
-      source: 'No candidate source completed',
-      checked: 0,
-      pages: [],
-      cursor,
-      nextCursor: cursor,
-      results: [],
-      sourceErrors: [e.message],
-      message: 'The research service stayed online, but its upstream public data sources were temporarily unavailable.'
+    res.status(502).json({
+      error: 'Bitcoin discovery providers are temporarily unavailable.',
+      detail: e.message || String(e)
     });
   }
 });
