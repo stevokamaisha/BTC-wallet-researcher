@@ -1,4 +1,5 @@
 import express from 'express';
+import { load } from 'cheerio';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -180,7 +181,7 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'crypto-claim-research-backend',
-    version: '10.0',
+    version: '10.1',
     model: OPENAI_MODEL,
     openaiConfigured: Boolean(OPENAI_API_KEY),
     accessTokenConfigured: Boolean(APP_ACCESS_TOKEN)
@@ -507,6 +508,157 @@ async function addLatestActivity(candidate) {
   };
 }
 
+
+function parseRichDate(value) {
+  const text = String(value || '').trim();
+  if (!text || text === '—' || text === '-' || text.toLowerCase() === 'unknown') return null;
+  const date = new Date(text + 'T00:00:00Z');
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+async function getHighBalanceCandidates() {
+  const cacheKey = 'openbitcoin:rich-list';
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const { text } = await fetchWithTimeout(
+    'https://openbitcoin.com/rich-list',
+    {
+      accept: 'text/html',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Safari/537.36'
+      }
+    },
+    16000
+  );
+
+  const $ = load(text);
+  const rows = [];
+
+  $('tr').each((_, tr) => {
+    const cells = $(tr).find('td');
+    if (cells.length < 3) return;
+
+    const rank = Number.parseInt($(cells[0]).text().replace(/[^0-9]/g, ''), 10);
+    const addressCell = $(cells[1]).text().trim();
+    const addressMatch = addressCell.match(/(bc1[0-9a-z]{20,90}|[13][a-km-zA-HJ-NP-Z1-9]{25,62})/i);
+    if (!addressMatch) return;
+
+    const balanceText = $(cells[2]).text().replace(/,/g, '');
+    const balanceMatch = balanceText.match(/([0-9]+(?:\.[0-9]+)?)\s*BTC/i);
+    const balance = balanceMatch ? Number(balanceMatch[1]) : NaN;
+    if (!Number.isFinite(balance)) return;
+
+    const firstSeen = cells.length > 6 ? parseRichDate($(cells[6]).text()) : null;
+    const lastActivity = cells.length > 7 ? parseRichDate($(cells[7]).text()) : null;
+
+    rows.push({
+      address: addressMatch[1],
+      rank: Number.isFinite(rank) ? rank : null,
+      balance,
+      firstSeen: firstSeen ? firstSeen.toISOString() : null,
+      sourceLastActivity: lastActivity ? lastActivity.toISOString() : null,
+      sourceDormantYears: lastActivity ? yearsAgo(lastActivity) : null,
+      source: 'OpenBitcoin rich list'
+    });
+  });
+
+  if (rows.length < 20) {
+    throw new Error('High-balance index returned too few rows.');
+  }
+
+  return cachePut(cacheKey, rows);
+}
+
+async function discoverHighBalance({ years, minBalance, limit }) {
+  const rows = await getHighBalanceCandidates();
+
+  const eligibleByBalance = rows
+    .filter((x) => Number.isFinite(x.balance) && x.balance >= minBalance)
+    .sort((a, b) => b.balance - a.balance);
+
+  const likelyDormant = eligibleByBalance.filter((x) =>
+    x.sourceDormantYears == null || x.sourceDormantYears >= years
+  );
+
+  const verificationPool = [];
+  const seen = new Set();
+
+  for (const row of likelyDormant) {
+    if (seen.has(row.address)) continue;
+    seen.add(row.address);
+    verificationPool.push(row);
+    if (verificationPool.length >= Math.max(limit * 5, 25)) break;
+  }
+
+  for (const row of eligibleByBalance) {
+    if (seen.has(row.address)) continue;
+    seen.add(row.address);
+    verificationPool.push(row);
+    if (verificationPool.length >= Math.max(limit * 7, 35)) break;
+  }
+
+  const verifiedRaw = await mapLimit(
+    verificationPool,
+    4,
+    async (row) => {
+      const balanceRow = await addressBalanceSnapshot(row);
+      const activityRow = await addLatestActivity(balanceRow);
+      return {
+        ...activityRow,
+        rank: row.rank,
+        source: row.source,
+        sourceLastActivity: row.sourceLastActivity,
+        sourceDormantYears: row.sourceDormantYears
+      };
+    }
+  );
+
+  const verified = verifiedRaw.filter((x) => x && !x.__error);
+  const errors = verifiedRaw.filter((x) => x && x.__error).map((x) => x.__error);
+
+  const exact = verified
+    .filter((x) =>
+      Number.isFinite(x.balance) &&
+      x.balance >= minBalance &&
+      x.dormantYears != null &&
+      x.dormantYears >= years
+    )
+    .sort((a, b) => b.balance - a.balance)
+    .slice(0, limit);
+
+  const exactSet = new Set(exact.map((x) => x.address));
+
+  const nearMatches = verified
+    .filter((x) =>
+      !exactSet.has(x.address) &&
+      Number.isFinite(x.balance) &&
+      x.balance >= minBalance
+    )
+    .sort((a, b) => b.balance - a.balance)
+    .slice(0, Math.min(limit, 5));
+
+  return {
+    ok: true,
+    source: 'High-balance Bitcoin index + Blockstream/mempool verification',
+    tipHeight: null,
+    targetHeight: null,
+    blocksRequested: 0,
+    blocksRead: 0,
+    checked: verified.length,
+    fundedChecked: verified.filter((x) => x.balance >= minBalance).length,
+    activityChecked: verified.length,
+    cursor: 0,
+    nextCursor: 1,
+    results: exact,
+    nearMatches,
+    providerErrors: errors.slice(0, 8),
+    message: exact.length
+      ? 'High-balance discovery found verified addresses matching the dormancy filter.'
+      : 'High-balance discovery completed. No exact dormancy match in the verified set; large funded near matches are shown.'
+  };
+}
+
 async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor }) {
   const config = discoveryConfig(depth);
   const tip = await getTipHeight();
@@ -621,12 +773,14 @@ async function discoverFromPublicChain({ years, minBalance, limit, depth, cursor
 app.get('/api/wallets/health', async (req, res) => {
   const checks = {
     backend: { ok: true, detail: 'Render backend online' },
+    highBalanceIndex: { ok: false, detail: '' },
     blockstream: { ok: false, detail: '' },
     mempool: { ok: false, detail: '' }
   };
 
-  const tests = await Promise.allSettled(
-    ESPLORA_PROVIDERS.map(async (provider) => {
+  const [richResult, ...providerResults] = await Promise.allSettled([
+    getHighBalanceCandidates(),
+    ...ESPLORA_PROVIDERS.map(async (provider) => {
       const { text } = await fetchWithTimeout(
         provider.base + '/blocks/tip/height',
         { accept: 'text/plain' },
@@ -636,28 +790,34 @@ app.get('/api/wallets/health', async (req, res) => {
       if (!Number.isFinite(height)) throw new Error('Invalid block height');
       return { name: provider.name, height: Math.floor(height) };
     })
-  );
+  ]);
 
-  tests.forEach((result, i) => {
+  if (richResult.status === 'fulfilled') {
+    checks.highBalanceIndex = {
+      ok: true,
+      detail: richResult.value.length + ' high-balance addresses available'
+    };
+  } else {
+    checks.highBalanceIndex = {
+      ok: false,
+      detail: richResult.reason.message || String(richResult.reason)
+    };
+  }
+
+  providerResults.forEach((result, i) => {
     const key = i === 0 ? 'blockstream' : 'mempool';
     if (result.status === 'fulfilled') {
-      checks[key] = {
-        ok: true,
-        detail: 'height ' + result.value.height
-      };
+      checks[key] = { ok: true, detail: 'height ' + result.value.height };
     } else {
-      checks[key] = {
-        ok: false,
-        detail: result.reason.message || String(result.reason)
-      };
+      checks[key] = { ok: false, detail: result.reason.message || String(result.reason) };
     }
   });
 
   res.json({
     ok: true,
-    version: '10.0',
+    version: '10.1',
     checks,
-    usable: checks.blockstream.ok || checks.mempool.ok
+    usable: checks.highBalanceIndex.ok || checks.blockstream.ok || checks.mempool.ok
   });
 });
 
@@ -668,14 +828,27 @@ app.get('/api/wallets/discover', async (req, res) => {
   const depth = [200, 300, 500].includes(Number(req.query.depth)) ? Number(req.query.depth) : 200;
   const cursor = Math.max(0, Math.floor(Number(req.query.cursor || 0)));
 
+  const errors = [];
+
+  if (cursor === 0) {
+    try {
+      const data = await discoverHighBalance({ years, minBalance, limit });
+      return res.json(data);
+    } catch (e) {
+      errors.push('High-balance index: ' + (e.message || String(e)));
+    }
+  }
+
   try {
     const data = await discoverFromPublicChain({ years, minBalance, limit, depth, cursor });
-    res.json(data);
+    data.providerErrors = [...errors, ...(data.providerErrors || [])];
+    return res.json(data);
   } catch (e) {
-    console.error('wallet discovery error:', e.message);
-    res.status(502).json({
+    errors.push('Direct-chain fallback: ' + (e.message || String(e)));
+    console.error('wallet discovery error:', errors.join(' | '));
+    return res.status(502).json({
       error: 'Bitcoin discovery providers are temporarily unavailable.',
-      detail: e.message || String(e)
+      detail: errors.join(' | ')
     });
   }
 });
