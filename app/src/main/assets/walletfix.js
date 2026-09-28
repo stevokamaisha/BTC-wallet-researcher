@@ -11,7 +11,7 @@
     .replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 
   const h1 = document.querySelector('header h1');
-  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v11</span>';
+  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v11.1</span>';
 
   const sub = document.querySelector('header .sub');
   if (sub) sub.textContent = 'Bitcoin research + dedicated on-device Bitcoin Puzzle #101 solver';
@@ -585,11 +585,17 @@
 
     if (status) {
       status.className = 'notice ' + (state.error ? 'error' : state.running ? 'success' : '');
+      const neverStarted = !state.running &&
+        Number(state.totalChecked || 0) === 0 &&
+        Number(state.sessionChecked || 0) === 0 &&
+        (!state.currentHex || state.currentHex.endsWith('10000000000000000000000000'));
       status.textContent = state.error
         ? 'Solver error: ' + state.error
         : state.running
           ? 'Puzzle #101 solver is running on this phone.'
-          : 'Solver stopped. Your checkpoint is kept on this device.';
+          : neverStarted
+            ? 'Solver ready. Tap Start / resume to begin.'
+            : 'Solver stopped. Your checkpoint is kept on this device.';
     }
 
     if (current) current.textContent = state.currentHex || '10000000000000000000000000';
@@ -712,8 +718,18 @@
     main.appendChild(section);
 
     q('p101Start').onclick = () => {
-      try { Android.puzzle101Start(); refreshPuzzle101State(); }
-      catch (e) { renderPuzzle101State({error:e.message || String(e)}); }
+      try {
+        const el = q('p101Status');
+        if (el) {
+          el.className = 'notice';
+          el.textContent = 'Starting Puzzle #101 solver…';
+        }
+        q('p101Start').disabled = true;
+        Android.puzzle101Start();
+        setTimeout(refreshPuzzle101State, 120);
+      } catch (e) {
+        renderPuzzle101State({error:e.message || String(e)});
+      }
     };
     q('p101Stop').onclick = () => {
       try { Android.puzzle101Stop(); refreshPuzzle101State(); }
