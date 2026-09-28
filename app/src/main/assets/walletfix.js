@@ -5,16 +5,16 @@
 
   const q = (id) => document.getElementById(id);
   const BACKEND = 'https://crypto-claim-research-backend.onrender.com';
-  const PUZZLE101_ADDRESS = '1CKCVdbDJasYmhswB6HKZHEAnNaDpK7W4n';
-  const PUZZLE101_RANGE_SIZE = 1.2676506002282294e30;
+  const PUZZLE101_ADDRESS = '1QKBaU6WAeycb3DbKbLBkX7vJiaS8r42Xo';
+  const PUZZLE101_RANGE_SIZE = Math.pow(2, 69.5);
   const esc = (value) => String(value == null ? '' : value)
     .replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 
   const h1 = document.querySelector('header h1');
-  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v11.2</span>';
+  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v12.0</span>';
 
   const sub = document.querySelector('header .sub');
-  if (sub) sub.textContent = 'Bitcoin research + dedicated on-device Bitcoin Puzzle #101 solver';
+  if (sub) sub.textContent = 'Bitcoin research + on-device Puzzle #140 Pollard Kangaroo engine';
 
   const research = q('research');
   const discoverModeBtn = q('discoverModeBtn');
@@ -487,9 +487,9 @@
       if (address === PUZZLE101_ADDRESS && resultEl) {
         resultEl.insertAdjacentHTML('beforeend', `
           <div class="notice success" style="margin-top:12px">
-            <strong>Recognized: Bitcoin Puzzle #101.</strong><br>
-            This address is the dedicated target of the local Puzzle #101 solver in this app.
-            <button id="p101LookupOpen" class="btn" style="width:100%;margin-top:10px">Open Puzzle #101 solver</button>
+            <strong>Recognized: Bitcoin Puzzle #140.</strong><br>
+            This address is the dedicated target of the local Puzzle #140 solver in this app.
+            <button id="p101LookupOpen" class="btn" style="width:100%;margin-top:10px">Open Puzzle #140 solver</button>
           </div>
         `);
         const puzzleButton = q('p101LookupOpen');
@@ -538,7 +538,7 @@
   }
 
 
-  // Dedicated Bitcoin Puzzle #101 interface. The target and published range are fixed.
+  // Dedicated Bitcoin Puzzle #140 interface. The target and published range are fixed.
   let puzzle101LastFound = '';
 
   function formatPuzzleCount(value) {
@@ -549,10 +549,10 @@
 
   function formatPuzzleSpeed(value) {
     const n = Number(value || 0);
-    if (!Number.isFinite(n) || n <= 0) return '0 keys/s';
-    if (n >= 1000000) return (n / 1000000).toFixed(2) + ' M keys/s';
-    if (n >= 1000) return (n / 1000).toFixed(2) + ' K keys/s';
-    return n.toFixed(0) + ' keys/s';
+    if (!Number.isFinite(n) || n <= 0) return '0 jumps/s';
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + ' M jumps/s';
+    if (n >= 1000) return (n / 1000).toFixed(2) + ' K jumps/s';
+    return n.toFixed(0) + ' jumps/s';
   }
 
   function formatPuzzleCoverage(fraction) {
@@ -564,17 +564,17 @@
 
   function formatPuzzleEta(speed) {
     const n = Number(speed || 0);
-    if (!Number.isFinite(n) || n <= 0) return 'Start the solver to measure';
+    if (!Number.isFinite(n) || n <= 0) return 'Start Kangaroo to measure';
     const years = PUZZLE101_RANGE_SIZE / n / (365.2425 * 86400);
     if (!Number.isFinite(years)) return 'Unknown';
     if (years >= 1000000) {
       const exponent = Math.floor(Math.log10(years));
       const mantissa = years / Math.pow(10, exponent);
       return mantissa.toFixed(2) + ' × 10^' + exponent +
-        ' years for the full range at current phone speed';
+        ' years of expected Kangaroo work at this phone speed';
     }
     return years.toLocaleString(undefined, {maximumFractionDigits: 1}) +
-      ' years for the full range at current phone speed';
+      ' years of expected Kangaroo work at this phone speed';
   }
 
   function renderPuzzle101State(state) {
@@ -587,7 +587,7 @@
     const session = q('p101Session');
     const total = q('p101Total');
     const workers = q('p101Workers');
-    const coverage = q('p101Coverage');
+    const coverage = q('p101Coverage');\n    const dp = q('p101Dp');
     const eta = q('p101Eta');
     const found = q('p101Found');
 
@@ -596,22 +596,22 @@
       const neverStarted = !state.running &&
         Number(state.totalChecked || 0) === 0 &&
         Number(state.sessionChecked || 0) === 0 &&
-        (!state.currentHex || state.currentHex.endsWith('10000000000000000000000000'));
+        (!state.currentHex || state.currentHex.endsWith('80000000000000000000000000000000000'));
       status.textContent = state.error
         ? 'Solver error: ' + state.error
         : state.running
-          ? 'Puzzle #101 solver is running on this phone.'
+          ? 'Puzzle #140 Pollard Kangaroo is running on this phone.'
           : neverStarted
-            ? 'Solver ready. Tap Start / resume to begin.'
-            : 'Solver stopped. Your checkpoint is kept on this device.';
+            ? 'Kangaroo ready. Tap Start / resume to begin.'
+            : 'Kangaroo stopped. Total jump count is kept on this device.';
     }
 
-    if (current) current.textContent = state.currentHex || '10000000000000000000000000';
+    if (current) current.textContent = state.currentHex || '80000000000000000000000000000000000';
     if (speed) speed.textContent = formatPuzzleSpeed(state.keysPerSecond);
     if (session) session.textContent = formatPuzzleCount(state.sessionChecked);
     if (total) total.textContent = formatPuzzleCount(state.totalChecked);
     if (workers) workers.textContent = String(state.workerCount || 0);
-    if (coverage) coverage.textContent = formatPuzzleCoverage(state.fractionChecked);
+    if (coverage) coverage.textContent = formatPuzzleCoverage(state.fractionChecked);\n    if (dp) dp.textContent = formatPuzzleCount(state.distinguishedPoints);
     if (eta) eta.textContent = formatPuzzleEta(state.keysPerSecond);
 
     if (q('p101Start')) q('p101Start').disabled = !!state.running;
@@ -626,7 +626,7 @@
           '<strong>MATCH FOUND.</strong>' +
           '<div class="tiny" style="margin-top:6px">The missing multiplier is:</div>' +
           '<div class="mono" style="margin-top:6px"><strong>x = 0x' + esc(puzzle101LastFound) + '</strong></div>' +
-          '<div class="tiny muted" style="margin-top:6px">This is the Puzzle #101 private key, kept locally on this device.</div>' +
+          '<div class="tiny muted" style="margin-top:6px">This is the candidate Puzzle #140 private key verified against the published public key, kept locally on this device.</div>' +
           '<button id="p101CopyFound" class="btn" style="width:100%;margin-top:10px">Copy x</button>';
         const copyFound = q('p101CopyFound');
         if (copyFound) copyFound.onclick = () => {
@@ -641,7 +641,7 @@
   function refreshPuzzle101State() {
     try {
       if (!window.Android || !Android.puzzle101State) {
-        renderPuzzle101State({error:'Native Puzzle #101 engine is unavailable. Install the v11 APK.'});
+        renderPuzzle101State({error:'Native Puzzle #140 engine is unavailable. Install the v11 APK.'});
         return;
       }
       const raw = Android.puzzle101State();
@@ -656,7 +656,7 @@
     const button = document.createElement('button');
     button.id = 'puzzle101Nav';
     button.dataset.screen = 'puzzle101';
-    button.textContent = 'Puzzle #101';
+    button.textContent = 'Puzzle #140';
     const second = nav.children.length > 1 ? nav.children[1] : null;
     if (second) nav.insertBefore(button, second);
     else nav.appendChild(button);
@@ -673,44 +673,44 @@
     section.className = 'screen';
     section.innerHTML = `
       <div class="card">
-        <h2>Bitcoin Puzzle #101 — local solver</h2>
+        <h2>Bitcoin Puzzle #140 — Pollard Kangaroo</h2>
         <div class="notice success">
-          This engine is fixed to the publicly published Bitcoin Puzzle #101 only. It cannot be pointed at another wallet.
+          This engine is fixed to the public Bitcoin Puzzle #140 only. Its secp256k1 public key is already exposed, so the app uses Pollard's Kangaroo instead of ordinary address brute force.
         </div>
 
         <div class="label">Target address</div>
         <div class="wallet">
-          <div class="mono">1CKCVdbDJasYmhswB6HKZHEAnNaDpK7W4n</div>
-          <div class="kv"><span>Published reward address balance</span><strong>10.1 BTC</strong></div>
-          <div class="kv"><span>Private-key interval</span><strong>101-bit puzzle</strong></div>
+          <div class="mono">1QKBaU6WAeycb3DbKbLBkX7vJiaS8r42Xo</div>
+          <div class="kv"><span>Published reward address balance</span><strong>14.000016 BTC</strong></div>
+          <div class="kv"><span>Private-key interval</span><strong>140-bit puzzle</strong></div>
         </div>
 
         <div class="label">Mathematical target</div>
         <div class="notice">
           <div><strong>Find x</strong> such that:</div>
-          <div class="mono tiny" style="margin-top:6px">2^100 ≤ x &lt; 2^101</div>
-          <div class="mono tiny" style="margin-top:6px">HASH160(compress(x × G)) = 7c1a77205c03b9909663b2034faa0b544e6bc96b</div>
-          <div class="tiny muted" style="margin-top:6px">G is the fixed secp256k1 generator. The unknown is x.</div>
+          <div class="mono tiny" style="margin-top:6px">2^139 ≤ x &lt; 2^140</div>
+          <div class="mono tiny" style="margin-top:6px">x × G = 031f6a332d3c5c4f2de2378c012f429cd109ba07d69690c6c701b6bb87860d6640</div>
+          <div class="tiny muted" style="margin-top:6px">The public key is known. Kangaroo reduces the expected work to roughly 2^69.5 elliptic-curve jumps.</div>
         </div>
 
         <div class="label">Published range</div>
         <div class="notice">
           <div class="tiny muted">Start</div>
-          <div class="mono">10000000000000000000000000</div>
+          <div class="mono">80000000000000000000000000000000000</div>
           <div class="tiny muted" style="margin-top:8px">End</div>
-          <div class="mono">1fffffffffffffffffffffffff</div>
+          <div class="mono">fffffffffffffffffffffffffffffffffff</div>
         </div>
 
         <div id="p101Status" class="notice" style="margin-top:10px">Loading local solver…</div>
 
         <div class="wallet">
-          <div class="kv"><span>Speed</span><strong id="p101Speed">0 keys/s</strong></div>
-          <div class="kv"><span>Checked this run</span><strong id="p101Session">0</strong></div>
-          <div class="kv"><span>Total checked on this device</span><strong id="p101Total">0</strong></div>
-          <div class="kv"><span>Parallel CPU workers</span><strong id="p101Workers">0</strong></div>
-          <div class="kv"><span>Range covered</span><strong id="p101Coverage">0%</strong></div>
-          <div class="label">Safe resume x</div>
-          <div id="p101Current" class="mono tiny">10000000000000000000000000</div>
+          <div class="kv"><span>Kangaroo speed</span><strong id="p101Speed">0 jumps/s</strong></div>
+          <div class="kv"><span>Jumps this run</span><strong id="p101Session">0</strong></div>
+          <div class="kv"><span>Total jumps on this device</span><strong id="p101Total">0</strong></div>
+          <div class="kv"><span>Parallel CPU workers</span><strong id="p101Workers">0</strong></div>\n          <div class="kv"><span>Stored distinguished points</span><strong id="p101Dp">0</strong></div>
+          <div class="kv"><span>Work vs 2^69.5 estimate</span><strong id="p101Coverage">0%</strong></div>
+          <div class="label">Fixed range start</div>
+          <div id="p101Current" class="mono tiny">80000000000000000000000000000000000</div>
           <div class="label">Full-range estimate</div>
           <div id="p101Eta" class="tiny muted">Start the solver to measure</div>
         </div>
@@ -720,8 +720,8 @@
           <button id="p101Stop" class="btn secondary">Stop</button>
         </div>
         <div class="row" style="margin-top:8px">
-          <button id="p101Random" class="btn secondary">New random shard</button>
-          <button id="p101Reset" class="btn secondary">Reset to range start</button>
+          <button id="p101Random" class="btn secondary">New random walks</button>
+          <button id="p101Reset" class="btn secondary">Reset Kangaroo counters</button>
         </div>
         <div class="row" style="margin-top:8px">
           <button id="p101Test" class="btn secondary">Self-test solver</button>
@@ -731,9 +731,8 @@
         <div id="p101Found" class="notice success hidden" style="margin-top:10px"></div>
 
         <div class="notice warn" style="margin-top:10px">
-          v11.2 splits the published Puzzle #101 interval into non-overlapping chunks and searches them across multiple CPU cores.
-          It still performs secp256k1 public-key generation and HASH160 comparisons entirely on your phone.
-          This is substantially faster than the old single-thread build, but 2<sup>100</sup> remains an enormous search space. The phone can become hot and drain the battery quickly.
+          v12.0 uses tame and wild Pollard Kangaroo walks with distinguished-point collision checks across multiple CPU cores.
+          The exposed public key makes this mathematically much better than brute force, but roughly 2<sup>69.5</sup> expected jumps is still far beyond a phone-scale search. This screen is a real local implementation and benchmark, not a promise of a quick solve. Stop it if the phone becomes hot.
         </div>
       </div>
     `;
@@ -744,7 +743,7 @@
         const el = q('p101Status');
         if (el) {
           el.className = 'notice';
-          el.textContent = 'Starting Puzzle #101 solver…';
+          el.textContent = 'Starting Puzzle #140 Kangaroo…';
         }
         q('p101Start').disabled = true;
         Android.puzzle101Start();
@@ -778,8 +777,8 @@
         if (el) {
           el.className = 'notice ' + (ok ? 'success' : 'error');
           el.textContent = ok
-            ? 'Self-test passed: secp256k1 + compressed public key + HASH160 engine is working.'
-            : 'Self-test failed. Do not run the solver on this build.';
+            ? 'Self-test passed: Puzzle #140 public key, address HASH160 and secp256k1 engine all match.'
+            : 'Self-test failed. Do not run Kangaroo on this build.';
         }
       } catch (e) {
         renderPuzzle101State({error:e.message || String(e)});
