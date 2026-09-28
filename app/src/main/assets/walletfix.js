@@ -1,18 +1,20 @@
 (function () {
   'use strict';
-  if (window.__stableV10Loaded) return;
-  window.__stableV10Loaded = true;
+  if (window.__stableV11Loaded) return;
+  window.__stableV11Loaded = true;
 
   const q = (id) => document.getElementById(id);
   const BACKEND = 'https://crypto-claim-research-backend.onrender.com';
+  const PUZZLE101_ADDRESS = '1CKCVdbDJasYmhswB6HKZHEAnNaDpK7W4n';
+  const PUZZLE101_RANGE_SIZE = 1.2676506002282294e30;
   const esc = (value) => String(value == null ? '' : value)
     .replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 
   const h1 = document.querySelector('header h1');
-  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v10</span>';
+  if (h1) h1.innerHTML = 'Crypto Claim & Wallet Researcher <span class="tiny muted">v11</span>';
 
   const sub = document.querySelector('header .sub');
-  if (sub) sub.textContent = 'Direct Bitcoin-chain discovery + reliable wallet lookup + verified claim-opportunity research';
+  if (sub) sub.textContent = 'Bitcoin research + dedicated on-device Bitcoin Puzzle #101 solver';
 
   const research = q('research');
   const discoverModeBtn = q('discoverModeBtn');
@@ -482,6 +484,21 @@
 
       if (typeof renderResearch === 'function') renderResearch(result);
 
+      if (address === PUZZLE101_ADDRESS && resultEl) {
+        resultEl.insertAdjacentHTML('beforeend', `
+          <div class="notice success" style="margin-top:12px">
+            <strong>Recognized: Bitcoin Puzzle #101.</strong><br>
+            This address is the dedicated target of the local Puzzle #101 solver in this app.
+            <button id="p101LookupOpen" class="btn" style="width:100%;margin-top:10px">Open Puzzle #101 solver</button>
+          </div>
+        `);
+        const puzzleButton = q('p101LookupOpen');
+        if (puzzleButton) puzzleButton.onclick = () => {
+          if (typeof showScreen === 'function') showScreen('puzzle101');
+          refreshPuzzle101State();
+        };
+      }
+
       const fallbacks = Array.isArray(data.providerErrors) ? data.providerErrors.length : 0;
       lookupMsg(
         fallbacks
@@ -519,6 +536,236 @@
       if (message) message.classList.add('hidden');
     };
   }
+
+
+  // Dedicated Bitcoin Puzzle #101 interface. The target and published range are fixed.
+  let puzzle101LastFound = '';
+
+  function formatPuzzleCount(value) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n)) return String(value || 0);
+    return Math.round(n).toLocaleString();
+  }
+
+  function formatPuzzleSpeed(value) {
+    const n = Number(value || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 keys/s';
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + ' M keys/s';
+    if (n >= 1000) return (n / 1000).toFixed(2) + ' K keys/s';
+    return n.toFixed(0) + ' keys/s';
+  }
+
+  function formatPuzzleCoverage(fraction) {
+    const pct = Number(fraction || 0) * 100;
+    if (!Number.isFinite(pct) || pct <= 0) return '0%';
+    if (pct < 0.000001) return pct.toExponential(3) + '%';
+    return pct.toFixed(8) + '%';
+  }
+
+  function formatPuzzleEta(speed) {
+    const n = Number(speed || 0);
+    if (!Number.isFinite(n) || n <= 0) return 'Start the solver to measure';
+    const years = PUZZLE101_RANGE_SIZE / n / (365.2425 * 86400);
+    if (!Number.isFinite(years)) return 'Unknown';
+    return years.toExponential(3) + ' years at current phone speed';
+  }
+
+  function renderPuzzle101State(state) {
+    state = state || {};
+    if (state.privateKeyHex) puzzle101LastFound = state.privateKeyHex;
+
+    const status = q('p101Status');
+    const current = q('p101Current');
+    const speed = q('p101Speed');
+    const session = q('p101Session');
+    const total = q('p101Total');
+    const coverage = q('p101Coverage');
+    const eta = q('p101Eta');
+    const found = q('p101Found');
+
+    if (status) {
+      status.className = 'notice ' + (state.error ? 'error' : state.running ? 'success' : '');
+      status.textContent = state.error
+        ? 'Solver error: ' + state.error
+        : state.running
+          ? 'Puzzle #101 solver is running on this phone.'
+          : 'Solver stopped. Your checkpoint is kept on this device.';
+    }
+
+    if (current) current.textContent = state.currentHex || '10000000000000000000000000';
+    if (speed) speed.textContent = formatPuzzleSpeed(state.keysPerSecond);
+    if (session) session.textContent = formatPuzzleCount(state.sessionChecked);
+    if (total) total.textContent = formatPuzzleCount(state.totalChecked);
+    if (coverage) coverage.textContent = formatPuzzleCoverage(state.fractionChecked);
+    if (eta) eta.textContent = formatPuzzleEta(state.keysPerSecond);
+
+    if (q('p101Start')) q('p101Start').disabled = !!state.running;
+    if (q('p101Stop')) q('p101Stop').disabled = !state.running;
+
+    if (found) {
+      if (puzzle101LastFound) {
+        found.classList.remove('hidden');
+        found.innerHTML =
+          '<strong>MATCH FOUND.</strong><div class="tiny" style="margin-top:6px">Private key (hex), held locally on this device:</div>' +
+          '<div class="mono" style="margin-top:6px">' + esc(puzzle101LastFound) + '</div>' +
+          '<button id="p101CopyFound" class="btn" style="width:100%;margin-top:10px">Copy private key</button>';
+        const copyFound = q('p101CopyFound');
+        if (copyFound) copyFound.onclick = () => {
+          if (typeof copyText === 'function') copyText(puzzle101LastFound);
+        };
+      } else {
+        found.classList.add('hidden');
+      }
+    }
+  }
+
+  function refreshPuzzle101State() {
+    try {
+      if (!window.Android || !Android.puzzle101State) {
+        renderPuzzle101State({error:'Native Puzzle #101 engine is unavailable. Install the v11 APK.'});
+        return;
+      }
+      const raw = Android.puzzle101State();
+      renderPuzzle101State(JSON.parse(raw || '{}'));
+    } catch (e) {
+      renderPuzzle101State({error:e && e.message ? e.message : String(e)});
+    }
+  }
+
+  const nav = document.querySelector('header nav');
+  if (nav && !q('puzzle101Nav')) {
+    const button = document.createElement('button');
+    button.id = 'puzzle101Nav';
+    button.dataset.screen = 'puzzle101';
+    button.textContent = 'Puzzle #101';
+    const second = nav.children.length > 1 ? nav.children[1] : null;
+    if (second) nav.insertBefore(button, second);
+    else nav.appendChild(button);
+    button.onclick = () => {
+      if (typeof showScreen === 'function') showScreen('puzzle101');
+      refreshPuzzle101State();
+    };
+  }
+
+  const main = document.querySelector('main');
+  if (main && !q('puzzle101')) {
+    const section = document.createElement('section');
+    section.id = 'puzzle101';
+    section.className = 'screen';
+    section.innerHTML = `
+      <div class="card">
+        <h2>Bitcoin Puzzle #101 — local solver</h2>
+        <div class="notice success">
+          This engine is fixed to the publicly published Bitcoin Puzzle #101 only. It cannot be pointed at another wallet.
+        </div>
+
+        <div class="label">Target address</div>
+        <div class="wallet">
+          <div class="mono">1CKCVdbDJasYmhswB6HKZHEAnNaDpK7W4n</div>
+          <div class="kv"><span>Published reward address balance</span><strong>10.1 BTC</strong></div>
+          <div class="kv"><span>Private-key interval</span><strong>101-bit puzzle</strong></div>
+        </div>
+
+        <div class="label">Published range</div>
+        <div class="notice">
+          <div class="tiny muted">Start</div>
+          <div class="mono">10000000000000000000000000</div>
+          <div class="tiny muted" style="margin-top:8px">End</div>
+          <div class="mono">1fffffffffffffffffffffffff</div>
+        </div>
+
+        <div id="p101Status" class="notice" style="margin-top:10px">Loading local solver…</div>
+
+        <div class="wallet">
+          <div class="kv"><span>Speed</span><strong id="p101Speed">0 keys/s</strong></div>
+          <div class="kv"><span>Checked this run</span><strong id="p101Session">0</strong></div>
+          <div class="kv"><span>Total checked on this device</span><strong id="p101Total">0</strong></div>
+          <div class="kv"><span>Range covered</span><strong id="p101Coverage">0%</strong></div>
+          <div class="label">Current / resume key</div>
+          <div id="p101Current" class="mono tiny">10000000000000000000000000</div>
+          <div class="label">Full-range estimate</div>
+          <div id="p101Eta" class="tiny muted">Start the solver to measure</div>
+        </div>
+
+        <div class="row">
+          <button id="p101Start" class="btn">Start / resume</button>
+          <button id="p101Stop" class="btn secondary">Stop</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="p101Random" class="btn secondary">New random shard</button>
+          <button id="p101Reset" class="btn secondary">Reset to range start</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="p101Test" class="btn secondary">Self-test solver</button>
+          <button id="p101Explorer" class="btn secondary">Open target explorer</button>
+        </div>
+
+        <div id="p101Found" class="notice success hidden" style="margin-top:10px"></div>
+
+        <div class="notice warn" style="margin-top:10px">
+          The solver performs secp256k1 public-key generation and HASH160 comparisons entirely on your phone.
+          It can heat the device and drain the battery. Puzzle #101 has 2<sup>100</sup> possible keys, so a phone cannot realistically exhaust the complete range.
+          Stop the solver whenever the phone becomes hot.
+        </div>
+      </div>
+    `;
+    main.appendChild(section);
+
+    q('p101Start').onclick = () => {
+      try { Android.puzzle101Start(); refreshPuzzle101State(); }
+      catch (e) { renderPuzzle101State({error:e.message || String(e)}); }
+    };
+    q('p101Stop').onclick = () => {
+      try { Android.puzzle101Stop(); refreshPuzzle101State(); }
+      catch (e) { renderPuzzle101State({error:e.message || String(e)}); }
+    };
+    q('p101Random').onclick = () => {
+      try {
+        Android.puzzle101NewShard();
+        puzzle101LastFound = '';
+        refreshPuzzle101State();
+      } catch (e) { renderPuzzle101State({error:e.message || String(e)}); }
+    };
+    q('p101Reset').onclick = () => {
+      try {
+        Android.puzzle101Reset();
+        puzzle101LastFound = '';
+        refreshPuzzle101State();
+      } catch (e) { renderPuzzle101State({error:e.message || String(e)}); }
+    };
+    q('p101Test').onclick = () => {
+      try {
+        const ok = Android.puzzle101SelfTest();
+        const el = q('p101Status');
+        if (el) {
+          el.className = 'notice ' + (ok ? 'success' : 'error');
+          el.textContent = ok
+            ? 'Self-test passed: secp256k1 + compressed public key + HASH160 engine is working.'
+            : 'Self-test failed. Do not run the solver on this build.';
+        }
+      } catch (e) {
+        renderPuzzle101State({error:e.message || String(e)});
+      }
+    };
+    q('p101Explorer').onclick = () => {
+      if (typeof openExternal === 'function') {
+        openExternal('https://blockstream.info/address/' + PUZZLE101_ADDRESS);
+      }
+    };
+  }
+
+  window.Puzzle101Native = {
+    _update: function (state) {
+      renderPuzzle101State(state || {});
+    }
+  };
+
+  setInterval(() => {
+    const section = q('puzzle101');
+    if (section && section.classList.contains('active')) refreshPuzzle101State();
+  }, 1500);
+
+  refreshPuzzle101State();
 
   showDiscover();
 })();
