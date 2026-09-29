@@ -19,12 +19,12 @@ jobs:
           python-version: '3.12'
       - name: Install bounded research dependencies
         run: python -m pip install --disable-pip-version-check bip-utils==2.10.0
-      - name: Run Genesis clue pass
-        run: python research/genesis/genesis_clue_pass.py
+      - name: Run Genesis clue pass B
+        run: python research/genesis/genesis_clue_pass_b.py
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: genesis-clue-pass-a
-          path: genesis-pass-a-results.json
+          name: genesis-clue-pass-b
+          path: genesis-pass-b-results.json
           if-no-files-found: warn
