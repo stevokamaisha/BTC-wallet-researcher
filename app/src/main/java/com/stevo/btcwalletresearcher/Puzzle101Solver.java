@@ -229,6 +229,11 @@ public final class Puzzle101Solver {
                 return false;
             }
 
+            if (!KangarooSotaLab.selfTest()) {
+                lastError = "SOTA collision laboratory self-test failed.";
+                return false;
+            }
+
             return true;
         } catch (Throwable t) {
             lastError = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
